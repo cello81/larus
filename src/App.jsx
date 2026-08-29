@@ -256,22 +256,7 @@ export default function HouseholdApp() {
   }
 
   return (
-    <div
-      style={{
-        fontFamily:
-          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-        background: "#F4F4EF",
-        minHeight: "600px",
-        maxWidth: "420px",
-        margin: "0 auto",
-        borderRadius: "20px",
-        overflow: "hidden",
-        boxShadow: "0 0 0 1px rgba(0,0,0,0.06)",
-        display: "flex",
-        flexDirection: "column",
-        position: "relative",
-      }}
-    >
+    <div className="app-shell">
       {/* Header */}
       <div style={{ background: "#2F4538", color: "#fff", padding: "1.1rem 1.25rem 1rem", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div>
@@ -299,7 +284,7 @@ export default function HouseholdApp() {
       )}
 
       {/* Content */}
-      <div style={{ flex: 1, padding: "14px", overflowY: "auto", minHeight: "360px" }}>
+      <div style={{ flex: 1, padding: "14px", overflowY: "auto", minHeight: 0 }}>
         {tab === "tasks" && (
           <TasksView
             openTasks={openTasks}
@@ -362,23 +347,7 @@ export default function HouseholdApp() {
 
 function LoginScreen({ members, onLogin }) {
   return (
-    <div
-      style={{
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-        background: "#2F4538",
-        minHeight: "600px",
-        maxWidth: "420px",
-        margin: "0 auto",
-        borderRadius: "20px",
-        overflow: "hidden",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "2rem 1.5rem",
-        boxSizing: "border-box",
-      }}
-    >
+    <div className="login-shell">
       <div style={{ color: "#fff", fontSize: "24px", fontWeight: 600, marginBottom: "6px" }}>Larus</div>
       <div style={{ color: "rgba(255,255,255,0.65)", fontSize: "14px", marginBottom: "28px", textAlign: "center" }}>
         Wer bist du?
