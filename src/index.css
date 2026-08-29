@@ -1,11 +1,67 @@
 * { box-sizing: border-box; }
-body {
+html, body {
   margin: 0;
+  height: 100%;
+}
+body {
   background: #E9E8E1;
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: env(safe-area-inset-top, 0) 0 env(safe-area-inset-bottom, 0);
 }
-#root { width: 100%; display: flex; justify-content: center; }
+#root {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.app-shell,
+.login-shell {
+  width: 100%;
+  max-width: 480px;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  box-sizing: border-box;
+}
+
+.app-shell {
+  background: #F4F4EF;
+  padding-top: env(safe-area-inset-top, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.login-shell {
+  background: #2F4538;
+  align-items: center;
+  justify-content: center;
+  padding: calc(2rem + env(safe-area-inset-top, 0)) 1.5rem calc(2rem + env(safe-area-inset-bottom, 0));
+}
+
+/* On wider viewports (tablet, desktop browser) show as a centered card
+   instead of stretching edge-to-edge. */
+@media (min-width: 481px) {
+  .app-shell,
+  .login-shell {
+    min-height: min(100dvh, 800px);
+    margin: 2.5rem auto;
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 20px 40px rgba(0, 0, 0, 0.08);
+  }
+}
+
+/* Installed as a standalone app: always fill the whole screen, no
+   floating-card look. */
+@media (display-mode: standalone) {
+  .app-shell,
+  .login-shell {
+    min-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
