@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { CheckCircle2, Circle, Plus, Trophy, History, Settings, X, Gift, Trash2, Repeat, User, LogOut, Download, Share } from "lucide-react";
+import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock } from "lucide-react";
 
 const MEMBER_COLORS = [
   { bg: "#2F4538", text: "#FFFFFF" },
@@ -18,22 +18,14 @@ const DEFAULT_MEMBERS = [
   { name: "Nela", role: "member" },
 ];
 
-const uid = () => Math.random().toString(36).slice(2, 10);
+const DEFAULT_ZONES = ["Küche", "Bad", "Wohnzimmer", "Schlafzimmer"];
 
-function startOfWeek(d) {
-  const date = new Date(d);
-  const day = (date.getDay() + 6) % 7; // Monday = 0
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - day);
-  return date;
-}
-function isSameDay(a, b) {
-  const da = new Date(a), db = new Date(b);
-  return da.toDateString() === db.toDateString();
-}
-function isSameWeek(a, b) {
-  return startOfWeek(a).getTime() === startOfWeek(b).getTime();
-}
+const CLEAN_COLOR = "#4B6B43";
+const WARN_COLOR = "#E0A72E";
+const OVERDUE_COLOR = "#8A4B3B";
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const DAY_MS = 86400000;
 
 const API_URL = "api/data.php";
 const LOGIN_KEY = "larus_user_id";
@@ -71,18 +63,54 @@ function isIOS() {
   return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
 }
 
+function taskFrequencyDays(task) {
+  if (task.frequencyDays) return task.frequencyDays;
+  if (task.recurring === "daily") return 1;
+  if (task.recurring === "weekly") return 7;
+  return 30;
+}
+
+function lastCompletedAt(taskId, log) {
+  const entries = log.filter((e) => e.taskId === taskId && e.type === "complete");
+  if (entries.length === 0) return null;
+  return entries.reduce((a, b) => (a.timestamp > b.timestamp ? a : b)).timestamp;
+}
+
+function getDirtiness(task, log) {
+  const freq = taskFrequencyDays(task);
+  const last = lastCompletedAt(task.id, log);
+  const baseline = last ?? task.createdAt ?? Date.now() - freq * DAY_MS;
+  const days = (Date.now() - baseline) / DAY_MS;
+  const ratio = freq > 0 ? days / freq : 0;
+  let color = CLEAN_COLOR;
+  if (ratio >= 1) color = OVERDUE_COLOR;
+  else if (ratio >= 0.5) color = WARN_COLOR;
+  return {
+    ratio,
+    percent: Math.max(0, Math.min(ratio * 100, 100)),
+    days: Math.floor(days),
+    everCompleted: last !== null,
+    color,
+    overdueDays: ratio > 1 ? Math.round(days - freq) : 0,
+  };
+}
+
 export default function HouseholdApp() {
   const [ready, setReady] = useState(false);
   const [members, setMembers] = useState([]);
+  const [zones, setZones] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [rewards, setRewards] = useState([]);
   const [log, setLog] = useState([]);
   const [tab, setTab] = useState("tasks");
   const [currentUser, setCurrentUser] = useState(null);
+  const [pendingPinMember, setPendingPinMember] = useState(null);
 
   const [showAddTask, setShowAddTask] = useState(false);
   const [showAddMember, setShowAddMember] = useState(false);
+  const [showAddZone, setShowAddZone] = useState(false);
   const [showAddReward, setShowAddReward] = useState(false);
+  const [pinTargetMember, setPinTargetMember] = useState(null);
 
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installDismissed, setInstallDismissed] = useState(
@@ -93,6 +121,7 @@ export default function HouseholdApp() {
     (async () => {
       const data = await loadAllShared();
       let loadedMembers = data.members || [];
+      let loadedZones = data.zones || [];
 
       if (loadedMembers.length === 0) {
         loadedMembers = DEFAULT_MEMBERS.map((m, i) => ({
@@ -100,11 +129,17 @@ export default function HouseholdApp() {
           name: m.name,
           role: m.role,
           color: MEMBER_COLORS[i % MEMBER_COLORS.length],
+          pin: null,
         }));
         saveShared("members", loadedMembers);
       }
+      if (loadedZones.length === 0) {
+        loadedZones = DEFAULT_ZONES.map((name) => ({ id: uid(), name }));
+        saveShared("zones", loadedZones);
+      }
 
       setMembers(loadedMembers);
+      setZones(loadedZones);
       setTasks(data.tasks || []);
       setRewards(data.rewards || []);
       setLog(data.log || []);
@@ -141,38 +176,38 @@ export default function HouseholdApp() {
     return totals;
   }, [members, log]);
 
-  const isTaskOpenToday = useCallback(
-    (task) => {
-      const relevant = log.filter((e) => e.taskId === task.id && e.type === "complete");
-      if (relevant.length === 0) return true;
-      const last = relevant.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
-      if (task.recurring === "once") return false;
-      if (task.recurring === "daily") return !isSameDay(last.timestamp, Date.now());
-      if (task.recurring === "weekly") return !isSameWeek(last.timestamp, Date.now());
-      return true;
-    },
-    [log]
-  );
-
-  const openTasks = tasks.filter(isTaskOpenToday);
-  const doneTasks = tasks.filter((t) => !isTaskOpenToday(t));
-
-  function addTask({ name, points, recurring, assignedTo }) {
-    const next = [...tasks, { id: uid(), name, points, recurring, assignedTo: assignedTo || null }];
+  function addTask({ name, zoneId, frequencyDays, points, assignedTo }) {
+    const next = [
+      ...tasks,
+      { id: uid(), name, zoneId: zoneId || null, frequencyDays, points, assignedTo: assignedTo || null, createdAt: Date.now() },
+    ];
     persist("tasks", next, setTasks);
     setShowAddTask(false);
   }
   function deleteTask(id) {
     persist("tasks", tasks.filter((t) => t.id !== id), setTasks);
   }
+  function addZone(name) {
+    const next = [...zones, { id: uid(), name }];
+    persist("zones", next, setZones);
+    setShowAddZone(false);
+  }
+  function deleteZone(id) {
+    persist("zones", zones.filter((z) => z.id !== id), setZones);
+    persist("tasks", tasks.map((t) => (t.zoneId === id ? { ...t, zoneId: null } : t)), setTasks);
+  }
   function addMember(name) {
     const color = MEMBER_COLORS[members.length % MEMBER_COLORS.length];
-    const next = [...members, { id: uid(), name, role: "member", color }];
+    const next = [...members, { id: uid(), name, role: "member", color, pin: null }];
     persist("members", next, setMembers);
     setShowAddMember(false);
   }
   function deleteMember(id) {
     persist("members", members.filter((m) => m.id !== id), setMembers);
+  }
+  function setMemberPin(id, pin) {
+    persist("members", members.map((m) => (m.id === id ? { ...m, pin: pin || null } : m)), setMembers);
+    setPinTargetMember(null);
   }
   function addReward({ name, cost }) {
     const next = [...rewards, { id: uid(), name, cost }];
@@ -215,9 +250,17 @@ export default function HouseholdApp() {
     persist("log", [entry, ...log], setLog);
   }
 
+  function selectLoginMember(member) {
+    if (member.pin) {
+      setPendingPinMember(member.id);
+    } else {
+      login(member.id);
+    }
+  }
   function login(memberId) {
     localStorage.setItem(LOGIN_KEY, memberId);
     setCurrentUser(memberId);
+    setPendingPinMember(null);
   }
   function logout() {
     localStorage.removeItem(LOGIN_KEY);
@@ -251,8 +294,19 @@ export default function HouseholdApp() {
     );
   }
 
+  if (pendingPinMember) {
+    const member = memberById(pendingPinMember);
+    return (
+      <PinScreen
+        member={member}
+        onSuccess={() => login(member.id)}
+        onBack={() => setPendingPinMember(null)}
+      />
+    );
+  }
+
   if (!currentUser) {
-    return <LoginScreen members={members} onLogin={login} />;
+    return <LoginScreen members={members} onSelect={selectLoginMember} />;
   }
 
   return (
@@ -287,13 +341,15 @@ export default function HouseholdApp() {
       <div style={{ flex: 1, padding: "14px", overflowY: "auto", minHeight: 0 }}>
         {tab === "tasks" && (
           <TasksView
-            openTasks={openTasks}
-            doneTasks={doneTasks}
+            tasks={tasks}
+            zones={zones}
+            log={log}
             memberById={memberById}
             isAdmin={isAdmin}
             onComplete={completeTask}
-            onDelete={deleteTask}
-            onAdd={() => setShowAddTask(true)}
+            onDeleteTask={deleteTask}
+            onAddTask={() => setShowAddTask(true)}
+            onAddZone={() => setShowAddZone(true)}
           />
         )}
         {tab === "board" && (
@@ -311,8 +367,12 @@ export default function HouseholdApp() {
         {tab === "settings" && isAdmin && (
           <SettingsView
             members={members}
+            zones={zones}
             onAddMember={() => setShowAddMember(true)}
             onDeleteMember={deleteMember}
+            onSetPin={(m) => setPinTargetMember(m)}
+            onAddZone={() => setShowAddZone(true)}
+            onDeleteZone={deleteZone}
           />
         )}
       </div>
@@ -328,24 +388,29 @@ export default function HouseholdApp() {
       </div>
 
       {showAddTask && (
-        <AddTaskModal members={members} onClose={() => setShowAddTask(false)} onSave={addTask} />
+        <AddTaskModal zones={zones} members={members} onClose={() => setShowAddTask(false)} onSave={addTask} />
+      )}
+      {showAddZone && (
+        <SimpleInputModal title="Bereich hinzufügen" placeholder="z.B. Küche" onClose={() => setShowAddZone(false)} onSave={addZone} />
       )}
       {showAddMember && (
-        <SimpleInputModal
-          title="Person hinzufügen"
-          placeholder="Name"
-          onClose={() => setShowAddMember(false)}
-          onSave={addMember}
-        />
+        <SimpleInputModal title="Person hinzufügen" placeholder="Name" onClose={() => setShowAddMember(false)} onSave={addMember} />
       )}
       {showAddReward && (
         <AddRewardModal onClose={() => setShowAddReward(false)} onSave={addReward} />
+      )}
+      {pinTargetMember && (
+        <PinSetModal
+          member={pinTargetMember}
+          onClose={() => setPinTargetMember(null)}
+          onSave={(pin) => setMemberPin(pinTargetMember.id, pin)}
+        />
       )}
     </div>
   );
 }
 
-function LoginScreen({ members, onLogin }) {
+function LoginScreen({ members, onSelect }) {
   return (
     <div className="login-shell">
       <div style={{ color: "#fff", fontSize: "24px", fontWeight: 600, marginBottom: "6px" }}>Larus</div>
@@ -356,7 +421,7 @@ function LoginScreen({ members, onLogin }) {
         {members.map((m) => (
           <button
             key={m.id}
-            onClick={() => onLogin(m.id)}
+            onClick={() => onSelect(m)}
             style={{
               display: "flex",
               alignItems: "center",
@@ -371,16 +436,103 @@ function LoginScreen({ members, onLogin }) {
               cursor: "pointer",
             }}
           >
-            <div style={{ width: "32px", height: "32px", borderRadius: "50%", background: m.color.bg, border: "1px solid rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 600 }}>
+            <div style={{ width: "32px", height: "32px", borderRadius: "50%", background: m.color.bg, border: "1px solid rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 600, flexShrink: 0 }}>
               {m.name.slice(0, 2).toUpperCase()}
             </div>
-            {m.name}
+            <span style={{ flex: 1, textAlign: "left" }}>{m.name}</span>
+            {m.pin && <Lock size={13} color="rgba(255,255,255,0.5)" />}
           </button>
         ))}
       </div>
     </div>
   );
 }
+
+function PinScreen({ member, onSuccess, onBack }) {
+  const [digits, setDigits] = useState("");
+  const [error, setError] = useState(false);
+
+  function press(d) {
+    if (digits.length >= 4) return;
+    const next = digits + d;
+    setDigits(next);
+    setError(false);
+    if (next.length === 4) {
+      if (next === member.pin) {
+        setTimeout(() => onSuccess(), 120);
+      } else {
+        setError(true);
+        setTimeout(() => setDigits(""), 400);
+      }
+    }
+  }
+  function backspace() {
+    setDigits((d) => d.slice(0, -1));
+    setError(false);
+  }
+
+  return (
+    <div className="login-shell">
+      <button
+        onClick={onBack}
+        style={{ position: "absolute", top: "calc(1rem + env(safe-area-inset-top, 0))", left: "1rem", border: "none", background: "none", color: "rgba(255,255,255,0.7)", cursor: "pointer", display: "flex", alignItems: "center", gap: "4px", fontSize: "13px" }}
+      >
+        <ArrowLeft size={16} /> Zurück
+      </button>
+
+      <div style={{ width: "32px", height: "32px", borderRadius: "50%", background: member.color.bg, border: "1px solid rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 600, marginBottom: "10px" }}>
+        {member.name.slice(0, 2).toUpperCase()}
+      </div>
+      <div style={{ color: "#fff", fontSize: "17px", fontWeight: 600, marginBottom: "6px" }}>{member.name}</div>
+      <div style={{ color: error ? "#F0999" : "rgba(255,255,255,0.6)", fontSize: "13px", marginBottom: "22px" }}>
+        {error ? "Falscher Code" : "Code eingeben"}
+      </div>
+
+      <div style={{ display: "flex", gap: "12px", marginBottom: "28px" }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            style={{
+              width: "14px",
+              height: "14px",
+              borderRadius: "50%",
+              background: i < digits.length ? (error ? "#E0A72E" : "#fff") : "transparent",
+              border: "1.5px solid rgba(255,255,255,0.6)",
+            }}
+          />
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 64px)", gap: "14px" }}>
+        {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => (
+          <button key={d} onClick={() => press(d)} style={pinKeyStyle}>
+            {d}
+          </button>
+        ))}
+        <div />
+        <button onClick={() => press("0")} style={pinKeyStyle}>0</button>
+        <button onClick={backspace} style={{ ...pinKeyStyle, fontSize: "16px" }}>
+          <Delete size={20} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const pinKeyStyle = {
+  width: "64px",
+  height: "64px",
+  borderRadius: "50%",
+  border: "1px solid rgba(255,255,255,0.2)",
+  background: "rgba(255,255,255,0.06)",
+  color: "#fff",
+  fontSize: "20px",
+  fontWeight: 500,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  cursor: "pointer",
+};
 
 function InstallBanner({ isIOS, onInstall, onDismiss }) {
   return (
@@ -428,97 +580,132 @@ function NavButton({ icon, label, active, onClick }) {
   );
 }
 
-function TasksView({ openTasks, doneTasks, memberById, isAdmin, onComplete, onDelete, onAdd }) {
+function DirtBar({ percent, color }) {
+  return (
+    <div style={{ height: "5px", borderRadius: "3px", background: "#EDECE4", overflow: "hidden" }}>
+      <div style={{ height: "100%", width: `${percent}%`, background: color, borderRadius: "3px", transition: "width 0.3s" }} />
+    </div>
+  );
+}
+
+function TasksView({ tasks, zones, log, memberById, isAdmin, onComplete, onDeleteTask, onAddTask, onAddZone }) {
+  const grouped = useMemo(() => {
+    const byZone = {};
+    zones.forEach((z) => (byZone[z.id] = []));
+    byZone.__none = [];
+    tasks.forEach((t) => {
+      const key = t.zoneId && byZone[t.zoneId] ? t.zoneId : "__none";
+      byZone[key].push(t);
+    });
+    const groups = zones.map((z) => ({
+      zone: z,
+      tasks: byZone[z.id],
+      avgRatio:
+        byZone[z.id].length === 0
+          ? 0
+          : byZone[z.id].reduce((sum, t) => sum + getDirtiness(t, log).ratio, 0) / byZone[z.id].length,
+    }));
+    if (byZone.__none.length > 0) {
+      groups.push({
+        zone: { id: "__none", name: "Sonstiges" },
+        tasks: byZone.__none,
+        avgRatio: byZone.__none.reduce((sum, t) => sum + getDirtiness(t, log).ratio, 0) / byZone.__none.length,
+      });
+    }
+    return groups.filter((g) => g.tasks.length > 0).sort((a, b) => b.avgRatio - a.avgRatio);
+  }, [tasks, zones, log]);
+
   return (
     <div>
       {isAdmin && (
-        <button
-          onClick={onAdd}
-          style={{
-            width: "100%",
-            border: "1px dashed #c6c5bc",
-            borderRadius: "12px",
-            background: "transparent",
-            padding: "10px",
-            color: "#5a5a52",
-            fontSize: "14px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "6px",
-            marginBottom: "12px",
-            cursor: "pointer",
-          }}
-        >
-          <Plus size={16} /> Neue Aufgabe
-        </button>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
+          <button onClick={onAddTask} style={dashedBtnStyle}>
+            <Plus size={16} /> Aufgabe
+          </button>
+          <button onClick={onAddZone} style={dashedBtnStyle}>
+            <Plus size={16} /> Bereich
+          </button>
+        </div>
       )}
 
-      {openTasks.length === 0 && doneTasks.length === 0 && (
+      {grouped.length === 0 && (
         <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>
           Noch keine Aufgaben.
         </p>
       )}
 
-      {openTasks.map((t) => (
-        <TaskRow key={t.id} task={t} memberById={memberById} done={false} isAdmin={isAdmin} onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} />
-      ))}
-
-      {doneTasks.length > 0 && (
-        <>
-          <div style={{ fontSize: "12px", color: "#a0a09a", margin: "16px 0 6px", fontWeight: 500 }}>
-            Erledigt
+      {grouped.map((g) => {
+        const zoneColor = g.avgRatio >= 1 ? OVERDUE_COLOR : g.avgRatio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
+        return (
+          <div key={g.zone.id} style={{ marginBottom: "18px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+              <span style={{ fontSize: "13px", fontWeight: 600, color: "#2a2a26" }}>{g.zone.name}</span>
+              <span style={{ fontSize: "11px", fontWeight: 600, color: zoneColor }}>
+                {Math.round(Math.min(g.avgRatio, 1.5) * 100)}%
+              </span>
+            </div>
+            <div style={{ marginBottom: "8px" }}>
+              <DirtBar percent={Math.min(g.avgRatio, 1) * 100} color={zoneColor} />
+            </div>
+            {g.tasks.map((t) => (
+              <TaskRow
+                key={t.id}
+                task={t}
+                dirt={getDirtiness(t, log)}
+                assignee={t.assignedTo ? memberById(t.assignedTo) : null}
+                isAdmin={isAdmin}
+                onComplete={() => onComplete(t)}
+                onDelete={() => onDeleteTask(t.id)}
+              />
+            ))}
           </div>
-          {doneTasks.map((t) => (
-            <TaskRow key={t.id} task={t} memberById={memberById} done={true} isAdmin={isAdmin} onDelete={() => onDelete(t.id)} />
-          ))}
-        </>
-      )}
+        );
+      })}
     </div>
   );
 }
 
-function TaskRow({ task, memberById, done, isAdmin, onComplete, onDelete }) {
-  const assignee = task.assignedTo ? memberById(task.assignedTo) : null;
+const dashedBtnStyle = {
+  flex: 1,
+  border: "1px dashed #c6c5bc",
+  borderRadius: "12px",
+  background: "transparent",
+  padding: "10px",
+  color: "#5a5a52",
+  fontSize: "13px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "6px",
+  cursor: "pointer",
+};
+
+function TaskRow({ task, dirt, assignee, isAdmin, onComplete, onDelete }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "10px",
-        background: "#fff",
-        borderRadius: "12px",
-        padding: "10px 12px",
-        marginBottom: "8px",
-        opacity: done ? 0.55 : 1,
-      }}
-    >
-      <button onClick={done ? undefined : onComplete} style={{ border: "none", background: "none", padding: 0, cursor: done ? "default" : "pointer", color: done ? "#8fbf6f" : "#c6c5bc" }}>
-        {done ? <CheckCircle2 size={22} /> : <Circle size={22} />}
-      </button>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26", textDecoration: done ? "line-through" : "none" }}>
-          {task.name}
+    <div style={{ background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{task.name}</div>
+          <div style={{ fontSize: "11.5px", color: "#a0a09a", marginTop: "1px" }}>
+            {!dirt.everCompleted
+              ? "Noch nie erledigt"
+              : dirt.overdueDays > 0
+              ? `${dirt.overdueDays} Tag(e) überfällig`
+              : `vor ${dirt.days} Tag(en) erledigt`}
+            {" · "}{task.points} Pkt.
+            {assignee ? ` · ${assignee.name}` : ""}
+          </div>
         </div>
-        <div style={{ fontSize: "12px", color: "#a0a09a", display: "flex", gap: "8px", marginTop: "2px" }}>
-          <span>{task.points} Pkt.</span>
-          {task.recurring !== "once" && (
-            <span style={{ display: "flex", alignItems: "center", gap: "2px" }}>
-              <Repeat size={11} /> {task.recurring === "daily" ? "täglich" : "wöchentlich"}
-            </span>
-          )}
-          {assignee && (
-            <span style={{ display: "flex", alignItems: "center", gap: "2px" }}>
-              <User size={11} /> {assignee.name}
-            </span>
-          )}
-        </div>
-      </div>
-      {isAdmin && (
-        <button onClick={onDelete} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer", padding: "4px" }}>
-          <Trash2 size={15} />
+        <button onClick={onComplete} style={{ border: "none", background: "#2F4538", color: "#fff", borderRadius: "8px", padding: "6px 12px", fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+          Erledigt
         </button>
-      )}
+        {isAdmin && (
+          <button onClick={onDelete} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer", padding: "2px" }}>
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
+      <DirtBar percent={Math.min(dirt.ratio, 1) * 100} color={dirt.color} />
     </div>
   );
 }
@@ -542,24 +729,7 @@ function BoardView({ members, pointsByMember, rewards, isAdmin, onRedeem, onAddR
         <Gift size={13} /> Belohnungen
       </div>
       {isAdmin && (
-        <button
-          onClick={onAddReward}
-          style={{
-            width: "100%",
-            border: "1px dashed #c6c5bc",
-            borderRadius: "12px",
-            background: "transparent",
-            padding: "9px",
-            color: "#5a5a52",
-            fontSize: "13px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "6px",
-            marginBottom: "10px",
-            cursor: "pointer",
-          }}
-        >
+        <button onClick={onAddReward} style={{ ...dashedBtnStyle, width: "100%", marginBottom: "10px" }}>
           <Plus size={14} /> Belohnung hinzufügen
         </button>
       )}
@@ -610,7 +780,7 @@ function HistoryView({ log }) {
   );
 }
 
-function SettingsView({ members, onAddMember, onDeleteMember }) {
+function SettingsView({ members, zones, onAddMember, onDeleteMember, onSetPin, onAddZone, onDeleteZone }) {
   return (
     <div>
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "0 0 6px", fontWeight: 500 }}>
@@ -627,6 +797,9 @@ function SettingsView({ members, onAddMember, onDeleteMember }) {
               <span style={{ marginLeft: "6px", fontSize: "10px", color: "#E0A72E", fontWeight: 600, letterSpacing: "0.03em" }}>ADMIN</span>
             )}
           </div>
+          <button onClick={() => onSetPin(m)} style={{ border: "none", background: "none", color: m.pin ? "#2F4538" : "#c6c5bc", cursor: "pointer", display: "flex", alignItems: "center", padding: "4px" }} title="Code setzen">
+            <Lock size={14} />
+          </button>
           {m.role !== "admin" && (
             <button onClick={() => onDeleteMember(m.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
               <Trash2 size={15} />
@@ -634,29 +807,28 @@ function SettingsView({ members, onAddMember, onDeleteMember }) {
           )}
         </div>
       ))}
-      <button
-        onClick={onAddMember}
-        style={{
-          width: "100%",
-          border: "1px dashed #c6c5bc",
-          borderRadius: "12px",
-          background: "transparent",
-          padding: "10px",
-          color: "#5a5a52",
-          fontSize: "14px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: "6px",
-          marginTop: "4px",
-          cursor: "pointer",
-        }}
-      >
+      <button onClick={onAddMember} style={{ ...dashedBtnStyle, width: "100%", marginTop: "4px" }}>
         <Plus size={16} /> Person hinzufügen
       </button>
+
+      <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
+        Bereiche
+      </div>
+      {zones.map((z) => (
+        <div key={z.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "9px 12px", marginBottom: "7px" }}>
+          <div style={{ flex: 1, fontSize: "14px", color: "#2a2a26" }}>{z.name}</div>
+          <button onClick={() => onDeleteZone(z.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
+            <Trash2 size={15} />
+          </button>
+        </div>
+      ))}
+      <button onClick={onAddZone} style={{ ...dashedBtnStyle, width: "100%", marginTop: "4px" }}>
+        <Plus size={16} /> Bereich hinzufügen
+      </button>
+
       <p style={{ fontSize: "12px", color: "#c6c5bc", marginTop: "18px", lineHeight: 1.5 }}>
-        Alle Daten werden geteilt gespeichert – jede Person, die diese App öffnet, sieht dieselben Aufgaben und Punkte.
-        Nur Admins (Tamara) können Aufgaben und Belohnungen anlegen oder löschen.
+        Alle Daten werden geteilt gespeichert. Nur Admins (Tamara) können Aufgaben, Bereiche und Belohnungen verwalten.
+        Das Schloss-Symbol setzt einen optionalen 4-stelligen Code fürs Anmelden auf diesem Gerät – kein Ersatz für ein echtes Passwort, nur ein einfacher Schutz innerhalb der Familie.
       </p>
     </div>
   );
@@ -721,23 +893,27 @@ function SimpleInputModal({ title, placeholder, onClose, onSave }) {
   );
 }
 
-function AddTaskModal({ members, onClose, onSave }) {
+function AddTaskModal({ zones, members, onClose, onSave }) {
   const [name, setName] = useState("");
+  const [zoneId, setZoneId] = useState(zones[0]?.id || "");
+  const [frequencyDays, setFrequencyDays] = useState(7);
   const [points, setPoints] = useState(5);
-  const [recurring, setRecurring] = useState("once");
   const [assignedTo, setAssignedTo] = useState("");
   const [error, setError] = useState("");
   return (
     <ModalShell title="Neue Aufgabe" onClose={onClose}>
-      <input style={inputStyle} placeholder="z.B. Küche putzen" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} />
+      <input style={inputStyle} placeholder="z.B. Boden wischen" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} />
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Bereich</label>
+      <select style={inputStyle} value={zoneId} onChange={(e) => setZoneId(e.target.value)}>
+        <option value="">Kein Bereich</option>
+        {zones.map((z) => (
+          <option key={z.id} value={z.id}>{z.name}</option>
+        ))}
+      </select>
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Alle wie viele Tage fällig?</label>
+      <input style={inputStyle} type="number" min="1" step="1" value={frequencyDays} onChange={(e) => setFrequencyDays(Math.max(1, Math.round(Number(e.target.value) || 1)))} />
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Punkte</label>
       <input style={inputStyle} type="number" min="1" step="1" value={points} onChange={(e) => setPoints(Math.max(1, Math.round(Number(e.target.value) || 1)))} />
-      <label style={{ fontSize: "12px", color: "#8a897f" }}>Wiederholung</label>
-      <select style={inputStyle} value={recurring} onChange={(e) => setRecurring(e.target.value)}>
-        <option value="once">Einmalig</option>
-        <option value="daily">Täglich</option>
-        <option value="weekly">Wöchentlich</option>
-      </select>
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Zuständig (optional)</label>
       <select style={inputStyle} value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
         <option value="">Egal wer</option>
@@ -750,7 +926,7 @@ function AddTaskModal({ members, onClose, onSave }) {
         style={primaryBtn}
         onClick={() => {
           if (!name.trim()) return setError("Bitte einen Namen eingeben.");
-          onSave({ name: name.trim(), points, recurring, assignedTo });
+          onSave({ name: name.trim(), zoneId, frequencyDays, points, assignedTo });
         }}
       >
         Aufgabe speichern
@@ -778,6 +954,42 @@ function AddRewardModal({ onClose, onSave }) {
       >
         Belohnung speichern
       </button>
+    </ModalShell>
+  );
+}
+
+function PinSetModal({ member, onClose, onSave }) {
+  const [value, setValue] = useState(member.pin || "");
+  const [error, setError] = useState("");
+  return (
+    <ModalShell title={`Code für ${member.name}`} onClose={onClose}>
+      <input
+        style={inputStyle}
+        type="tel"
+        inputMode="numeric"
+        maxLength={4}
+        placeholder="4-stelliger Code"
+        value={value}
+        onChange={(e) => { setValue(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); }}
+      />
+      {error && <div style={{ color: "#8A4B3B", fontSize: "12px", marginBottom: "8px" }}>{error}</div>}
+      <button
+        style={primaryBtn}
+        onClick={() => {
+          if (value.length !== 4) return setError("Bitte genau 4 Ziffern eingeben.");
+          onSave(value);
+        }}
+      >
+        Speichern
+      </button>
+      {member.pin && (
+        <button
+          style={{ ...primaryBtn, background: "none", color: "#8A4B3B", marginTop: "8px", border: "1px solid #f0d9d3" }}
+          onClick={() => onSave(null)}
+        >
+          Code entfernen
+        </button>
+      )}
     </ModalShell>
   );
 }
