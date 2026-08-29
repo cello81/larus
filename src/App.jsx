@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { CheckCircle2, Circle, Plus, Trophy, History, Settings, X, Gift, Trash2, Repeat, User } from "lucide-react";
+import { CheckCircle2, Circle, Plus, Trophy, History, Settings, X, Gift, Trash2, Repeat, User, LogOut, Download, Share } from "lucide-react";
 
 const MEMBER_COLORS = [
   { bg: "#2F4538", text: "#FFFFFF" },
@@ -8,6 +8,14 @@ const MEMBER_COLORS = [
   { bg: "#6B4E71", text: "#FFFFFF" },
   { bg: "#4B6B43", text: "#FFFFFF" },
   { bg: "#8A6D3B", text: "#FFFFFF" },
+];
+
+const DEFAULT_MEMBERS = [
+  { name: "Tamara", role: "admin" },
+  { name: "Marcel", role: "member" },
+  { name: "Lya", role: "member" },
+  { name: "Jana", role: "member" },
+  { name: "Nela", role: "member" },
 ];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -28,6 +36,8 @@ function isSameWeek(a, b) {
 }
 
 const API_URL = "api/data.php";
+const LOGIN_KEY = "larus_user_id";
+const INSTALL_DISMISSED_KEY = "larus_install_dismissed";
 
 async function loadAllShared() {
   try {
@@ -51,6 +61,16 @@ async function saveShared(key, value) {
   }
 }
 
+function isStandalone() {
+  return (
+    window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    window.navigator.standalone === true
+  );
+}
+function isIOS() {
+  return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+}
+
 export default function HouseholdApp() {
   const [ready, setReady] = useState(false);
   const [members, setMembers] = useState([]);
@@ -63,18 +83,48 @@ export default function HouseholdApp() {
   const [showAddTask, setShowAddTask] = useState(false);
   const [showAddMember, setShowAddMember] = useState(false);
   const [showAddReward, setShowAddReward] = useState(false);
-  const [pendingComplete, setPendingComplete] = useState(null);
-  const [pendingRedeem, setPendingRedeem] = useState(null);
+
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
+  const [installDismissed, setInstallDismissed] = useState(
+    () => localStorage.getItem(INSTALL_DISMISSED_KEY) === "1"
+  );
 
   useEffect(() => {
     (async () => {
       const data = await loadAllShared();
-      setMembers(data.members || []);
+      let loadedMembers = data.members || [];
+
+      if (loadedMembers.length === 0) {
+        loadedMembers = DEFAULT_MEMBERS.map((m, i) => ({
+          id: uid(),
+          name: m.name,
+          role: m.role,
+          color: MEMBER_COLORS[i % MEMBER_COLORS.length],
+        }));
+        saveShared("members", loadedMembers);
+      }
+
+      setMembers(loadedMembers);
       setTasks(data.tasks || []);
       setRewards(data.rewards || []);
       setLog(data.log || []);
+
+      const savedUserId = localStorage.getItem(LOGIN_KEY);
+      if (savedUserId && loadedMembers.some((m) => m.id === savedUserId)) {
+        setCurrentUser(savedUserId);
+      }
+
       setReady(true);
     })();
+  }, []);
+
+  useEffect(() => {
+    function onBeforeInstall(e) {
+      e.preventDefault();
+      setDeferredInstallPrompt(e);
+    }
+    window.addEventListener("beforeinstallprompt", onBeforeInstall);
+    return () => window.removeEventListener("beforeinstallprompt", onBeforeInstall);
   }, []);
 
   const persist = useCallback((key, value, setter) => {
@@ -117,14 +167,12 @@ export default function HouseholdApp() {
   }
   function addMember(name) {
     const color = MEMBER_COLORS[members.length % MEMBER_COLORS.length];
-    const next = [...members, { id: uid(), name, color }];
+    const next = [...members, { id: uid(), name, role: "member", color }];
     persist("members", next, setMembers);
     setShowAddMember(false);
-    if (!currentUser) setCurrentUser(next[next.length - 1].id);
   }
   function deleteMember(id) {
     persist("members", members.filter((m) => m.id !== id), setMembers);
-    if (currentUser === id) setCurrentUser(null);
   }
   function addReward({ name, cost }) {
     const next = [...rewards, { id: uid(), name, cost }];
@@ -135,41 +183,65 @@ export default function HouseholdApp() {
     persist("rewards", rewards.filter((r) => r.id !== id), setRewards);
   }
 
-  function confirmComplete(memberId) {
-    const task = pendingComplete;
-    const member = members.find((m) => m.id === memberId);
+  function completeTask(task) {
+    const member = members.find((m) => m.id === currentUser);
+    if (!member) return;
     const entry = {
       id: uid(),
       type: "complete",
       taskId: task.id,
       taskName: task.name,
-      memberId,
+      memberId: member.id,
       memberName: member.name,
       points: task.points,
       timestamp: Date.now(),
     };
     persist("log", [entry, ...log], setLog);
-    setPendingComplete(null);
   }
 
-  function confirmRedeem(memberId) {
-    const reward = pendingRedeem;
-    const member = members.find((m) => m.id === memberId);
+  function redeemReward(reward) {
+    const member = members.find((m) => m.id === currentUser);
+    if (!member) return;
     const entry = {
       id: uid(),
       type: "redeem",
       taskId: null,
       taskName: reward.name,
-      memberId,
+      memberId: member.id,
       memberName: member.name,
       points: -reward.cost,
       timestamp: Date.now(),
     };
     persist("log", [entry, ...log], setLog);
-    setPendingRedeem(null);
+  }
+
+  function login(memberId) {
+    localStorage.setItem(LOGIN_KEY, memberId);
+    setCurrentUser(memberId);
+  }
+  function logout() {
+    localStorage.removeItem(LOGIN_KEY);
+    setCurrentUser(null);
+    setTab("tasks");
+  }
+
+  async function triggerInstall() {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    setDeferredInstallPrompt(null);
+  }
+  function dismissInstallBanner() {
+    localStorage.setItem(INSTALL_DISMISSED_KEY, "1");
+    setInstallDismissed(true);
   }
 
   const memberById = (id) => members.find((m) => m.id === id);
+  const me = memberById(currentUser);
+  const isAdmin = me?.role === "admin";
+
+  const showInstallBanner =
+    !installDismissed && !isStandalone() && (deferredInstallPrompt || isIOS());
 
   if (!ready) {
     return (
@@ -177,6 +249,10 @@ export default function HouseholdApp() {
         Larus wird geladen…
       </div>
     );
+  }
+
+  if (!currentUser) {
+    return <LoginScreen members={members} onLogin={login} />;
   }
 
   return (
@@ -193,47 +269,33 @@ export default function HouseholdApp() {
         boxShadow: "0 0 0 1px rgba(0,0,0,0.06)",
         display: "flex",
         flexDirection: "column",
+        position: "relative",
       }}
     >
       {/* Header */}
-      <div style={{ background: "#2F4538", color: "#fff", padding: "1.1rem 1.25rem 1rem" }}>
-        <div style={{ fontSize: "12px", opacity: 0.75, letterSpacing: "0.02em", marginBottom: "2px" }}>
-          Larus
+      <div style={{ background: "#2F4538", color: "#fff", padding: "1.1rem 1.25rem 1rem", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontSize: "12px", opacity: 0.75, letterSpacing: "0.02em", marginBottom: "2px" }}>
+            Larus &middot; {me?.name}
+          </div>
+          <div style={{ fontSize: "20px", fontWeight: 600 }}>
+            {tab === "tasks" && "Aufgaben"}
+            {tab === "board" && "Punktestand & Belohnungen"}
+            {tab === "history" && "Verlauf"}
+            {tab === "settings" && "Verwalten"}
+          </div>
         </div>
-        <div style={{ fontSize: "20px", fontWeight: 600 }}>
-          {tab === "tasks" && "Aufgaben"}
-          {tab === "board" && "Punktestand & Belohnungen"}
-          {tab === "history" && "Verlauf"}
-          {tab === "settings" && "Verwalten"}
-        </div>
+        <button
+          onClick={logout}
+          title="Wechseln"
+          style={{ border: "none", background: "rgba(255,255,255,0.12)", color: "#fff", borderRadius: "8px", padding: "6px 8px", cursor: "pointer", display: "flex", alignItems: "center", gap: "4px", fontSize: "12px" }}
+        >
+          <LogOut size={14} />
+        </button>
       </div>
 
-      {/* Who am I */}
-      {members.length > 0 && (
-        <div style={{ display: "flex", gap: "6px", padding: "10px 12px", overflowX: "auto", borderBottom: "1px solid #e5e4dd" }}>
-          <span style={{ fontSize: "12px", color: "#8a897f", alignSelf: "center", marginRight: "2px", whiteSpace: "nowrap" }}>
-            Ich bin:
-          </span>
-          {members.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setCurrentUser(m.id)}
-              style={{
-                border: currentUser === m.id ? `2px solid ${m.color.bg}` : "1px solid #ddd",
-                background: currentUser === m.id ? m.color.bg : "#fff",
-                color: currentUser === m.id ? m.color.text : "#444",
-                borderRadius: "999px",
-                padding: "4px 12px",
-                fontSize: "13px",
-                whiteSpace: "nowrap",
-                fontWeight: 500,
-                cursor: "pointer",
-              }}
-            >
-              {m.name}
-            </button>
-          ))}
-        </div>
+      {showInstallBanner && (
+        <InstallBanner isIOS={isIOS()} onInstall={triggerInstall} onDismiss={dismissInstallBanner} />
       )}
 
       {/* Content */}
@@ -243,7 +305,8 @@ export default function HouseholdApp() {
             openTasks={openTasks}
             doneTasks={doneTasks}
             memberById={memberById}
-            onComplete={(t) => setPendingComplete(t)}
+            isAdmin={isAdmin}
+            onComplete={completeTask}
             onDelete={deleteTask}
             onAdd={() => setShowAddTask(true)}
           />
@@ -253,13 +316,14 @@ export default function HouseholdApp() {
             members={members}
             pointsByMember={pointsByMember}
             rewards={rewards}
-            onRedeem={(r) => setPendingRedeem(r)}
+            isAdmin={isAdmin}
+            onRedeem={redeemReward}
             onAddReward={() => setShowAddReward(true)}
             onDeleteReward={deleteReward}
           />
         )}
         {tab === "history" && <HistoryView log={log} />}
-        {tab === "settings" && (
+        {tab === "settings" && isAdmin && (
           <SettingsView
             members={members}
             onAddMember={() => setShowAddMember(true)}
@@ -273,7 +337,9 @@ export default function HouseholdApp() {
         <NavButton icon={<CheckCircle2 size={20} />} label="Aufgaben" active={tab === "tasks"} onClick={() => setTab("tasks")} />
         <NavButton icon={<Trophy size={20} />} label="Punkte" active={tab === "board"} onClick={() => setTab("board")} />
         <NavButton icon={<History size={20} />} label="Verlauf" active={tab === "history"} onClick={() => setTab("history")} />
-        <NavButton icon={<Settings size={20} />} label="Verwalten" active={tab === "settings"} onClick={() => setTab("settings")} />
+        {isAdmin && (
+          <NavButton icon={<Settings size={20} />} label="Verwalten" active={tab === "settings"} onClick={() => setTab("settings")} />
+        )}
       </div>
 
       {showAddTask && (
@@ -290,24 +356,82 @@ export default function HouseholdApp() {
       {showAddReward && (
         <AddRewardModal onClose={() => setShowAddReward(false)} onSave={addReward} />
       )}
-      {pendingComplete && (
-        <PickMemberModal
-          title={`Wer hat "${pendingComplete.name}" erledigt?`}
-          members={members}
-          defaultId={currentUser}
-          onClose={() => setPendingComplete(null)}
-          onPick={confirmComplete}
-        />
+    </div>
+  );
+}
+
+function LoginScreen({ members, onLogin }) {
+  return (
+    <div
+      style={{
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        background: "#2F4538",
+        minHeight: "600px",
+        maxWidth: "420px",
+        margin: "0 auto",
+        borderRadius: "20px",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "2rem 1.5rem",
+        boxSizing: "border-box",
+      }}
+    >
+      <div style={{ color: "#fff", fontSize: "24px", fontWeight: 600, marginBottom: "6px" }}>Larus</div>
+      <div style={{ color: "rgba(255,255,255,0.65)", fontSize: "14px", marginBottom: "28px", textAlign: "center" }}>
+        Wer bist du?
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", maxWidth: "280px" }}>
+        {members.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => onLogin(m.id)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              border: "none",
+              background: "rgba(255,255,255,0.08)",
+              color: "#fff",
+              borderRadius: "12px",
+              padding: "12px 16px",
+              fontSize: "15px",
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            <div style={{ width: "32px", height: "32px", borderRadius: "50%", background: m.color.bg, border: "1px solid rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 600 }}>
+              {m.name.slice(0, 2).toUpperCase()}
+            </div>
+            {m.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InstallBanner({ isIOS, onInstall, onDismiss }) {
+  return (
+    <div style={{ background: "#EFEAD9", padding: "10px 12px", display: "flex", alignItems: "center", gap: "10px", borderBottom: "1px solid #e5e4dd" }}>
+      <Download size={16} color="#8A6D3B" style={{ flexShrink: 0 }} />
+      <div style={{ flex: 1, fontSize: "12.5px", color: "#5a5240", lineHeight: 1.4 }}>
+        {isIOS ? (
+          <>Als App installieren: <Share size={11} style={{ verticalAlign: "-1px" }} />-Symbol antippen, dann "Zum Home-Bildschirm".</>
+        ) : (
+          "Larus lässt sich als App installieren – schneller Zugriff vom Startbildschirm."
+        )}
+      </div>
+      {!isIOS && (
+        <button onClick={onInstall} style={{ border: "none", background: "#2F4538", color: "#fff", borderRadius: "8px", padding: "6px 10px", fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+          Installieren
+        </button>
       )}
-      {pendingRedeem && (
-        <PickMemberModal
-          title={`Wer löst "${pendingRedeem.name}" ein?`}
-          members={members}
-          defaultId={currentUser}
-          onClose={() => setPendingRedeem(null)}
-          onPick={confirmRedeem}
-        />
-      )}
+      <button onClick={onDismiss} style={{ border: "none", background: "none", color: "#a89f88", cursor: "pointer", padding: "2px" }}>
+        <X size={14} />
+      </button>
     </div>
   );
 }
@@ -335,38 +459,40 @@ function NavButton({ icon, label, active, onClick }) {
   );
 }
 
-function TasksView({ openTasks, doneTasks, memberById, onComplete, onDelete, onAdd }) {
+function TasksView({ openTasks, doneTasks, memberById, isAdmin, onComplete, onDelete, onAdd }) {
   return (
     <div>
-      <button
-        onClick={onAdd}
-        style={{
-          width: "100%",
-          border: "1px dashed #c6c5bc",
-          borderRadius: "12px",
-          background: "transparent",
-          padding: "10px",
-          color: "#5a5a52",
-          fontSize: "14px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: "6px",
-          marginBottom: "12px",
-          cursor: "pointer",
-        }}
-      >
-        <Plus size={16} /> Neue Aufgabe
-      </button>
+      {isAdmin && (
+        <button
+          onClick={onAdd}
+          style={{
+            width: "100%",
+            border: "1px dashed #c6c5bc",
+            borderRadius: "12px",
+            background: "transparent",
+            padding: "10px",
+            color: "#5a5a52",
+            fontSize: "14px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "6px",
+            marginBottom: "12px",
+            cursor: "pointer",
+          }}
+        >
+          <Plus size={16} /> Neue Aufgabe
+        </button>
+      )}
 
       {openTasks.length === 0 && doneTasks.length === 0 && (
         <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>
-          Noch keine Aufgaben. Leg los!
+          Noch keine Aufgaben.
         </p>
       )}
 
       {openTasks.map((t) => (
-        <TaskRow key={t.id} task={t} memberById={memberById} done={false} onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} />
+        <TaskRow key={t.id} task={t} memberById={memberById} done={false} isAdmin={isAdmin} onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} />
       ))}
 
       {doneTasks.length > 0 && (
@@ -375,7 +501,7 @@ function TasksView({ openTasks, doneTasks, memberById, onComplete, onDelete, onA
             Erledigt
           </div>
           {doneTasks.map((t) => (
-            <TaskRow key={t.id} task={t} memberById={memberById} done={true} onDelete={() => onDelete(t.id)} />
+            <TaskRow key={t.id} task={t} memberById={memberById} done={true} isAdmin={isAdmin} onDelete={() => onDelete(t.id)} />
           ))}
         </>
       )}
@@ -383,7 +509,7 @@ function TasksView({ openTasks, doneTasks, memberById, onComplete, onDelete, onA
   );
 }
 
-function TaskRow({ task, memberById, done, onComplete, onDelete }) {
+function TaskRow({ task, memberById, done, isAdmin, onComplete, onDelete }) {
   const assignee = task.assignedTo ? memberById(task.assignedTo) : null;
   return (
     <div
@@ -419,22 +545,19 @@ function TaskRow({ task, memberById, done, onComplete, onDelete }) {
           )}
         </div>
       </div>
-      <button onClick={onDelete} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer", padding: "4px" }}>
-        <Trash2 size={15} />
-      </button>
+      {isAdmin && (
+        <button onClick={onDelete} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer", padding: "4px" }}>
+          <Trash2 size={15} />
+        </button>
+      )}
     </div>
   );
 }
 
-function BoardView({ members, pointsByMember, rewards, onRedeem, onAddReward, onDeleteReward }) {
+function BoardView({ members, pointsByMember, rewards, isAdmin, onRedeem, onAddReward, onDeleteReward }) {
   const ranked = [...members].sort((a, b) => (pointsByMember[b.id] || 0) - (pointsByMember[a.id] || 0));
   return (
     <div>
-      {members.length === 0 && (
-        <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "1rem" }}>
-          Füge zuerst Familienmitglieder hinzu (unter Verwalten).
-        </p>
-      )}
       {ranked.map((m, i) => (
         <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
           <div style={{ fontSize: "13px", color: "#a0a09a", width: "16px", fontWeight: 600 }}>{i + 1}</div>
@@ -449,26 +572,28 @@ function BoardView({ members, pointsByMember, rewards, onRedeem, onAddReward, on
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "18px 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
         <Gift size={13} /> Belohnungen
       </div>
-      <button
-        onClick={onAddReward}
-        style={{
-          width: "100%",
-          border: "1px dashed #c6c5bc",
-          borderRadius: "12px",
-          background: "transparent",
-          padding: "9px",
-          color: "#5a5a52",
-          fontSize: "13px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: "6px",
-          marginBottom: "10px",
-          cursor: "pointer",
-        }}
-      >
-        <Plus size={14} /> Belohnung hinzufügen
-      </button>
+      {isAdmin && (
+        <button
+          onClick={onAddReward}
+          style={{
+            width: "100%",
+            border: "1px dashed #c6c5bc",
+            borderRadius: "12px",
+            background: "transparent",
+            padding: "9px",
+            color: "#5a5a52",
+            fontSize: "13px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "6px",
+            marginBottom: "10px",
+            cursor: "pointer",
+          }}
+        >
+          <Plus size={14} /> Belohnung hinzufügen
+        </button>
+      )}
       {rewards.length === 0 && (
         <p style={{ color: "#c6c5bc", fontSize: "13px", textAlign: "center" }}>Noch keine Belohnungen definiert.</p>
       )}
@@ -479,9 +604,11 @@ function BoardView({ members, pointsByMember, rewards, onRedeem, onAddReward, on
           <button onClick={() => onRedeem(r)} style={{ border: "1px solid #2F4538", color: "#2F4538", background: "none", borderRadius: "8px", padding: "5px 10px", fontSize: "12px", cursor: "pointer" }}>
             Einlösen
           </button>
-          <button onClick={() => onDeleteReward(r.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
-            <Trash2 size={14} />
-          </button>
+          {isAdmin && (
+            <button onClick={() => onDeleteReward(r.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
+              <Trash2 size={14} />
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -525,10 +652,17 @@ function SettingsView({ members, onAddMember, onDeleteMember }) {
           <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: m.color.bg, color: m.color.text, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 600 }}>
             {m.name.slice(0, 2).toUpperCase()}
           </div>
-          <div style={{ flex: 1, fontSize: "14px", color: "#2a2a26" }}>{m.name}</div>
-          <button onClick={() => onDeleteMember(m.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
-            <Trash2 size={15} />
-          </button>
+          <div style={{ flex: 1, fontSize: "14px", color: "#2a2a26" }}>
+            {m.name}
+            {m.role === "admin" && (
+              <span style={{ marginLeft: "6px", fontSize: "10px", color: "#E0A72E", fontWeight: 600, letterSpacing: "0.03em" }}>ADMIN</span>
+            )}
+          </div>
+          {m.role !== "admin" && (
+            <button onClick={() => onDeleteMember(m.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
+              <Trash2 size={15} />
+            </button>
+          )}
         </div>
       ))}
       <button
@@ -553,6 +687,7 @@ function SettingsView({ members, onAddMember, onDeleteMember }) {
       </button>
       <p style={{ fontSize: "12px", color: "#c6c5bc", marginTop: "18px", lineHeight: 1.5 }}>
         Alle Daten werden geteilt gespeichert – jede Person, die diese App öffnet, sieht dieselben Aufgaben und Punkte.
+        Nur Admins (Tamara) können Aufgaben und Belohnungen anlegen oder löschen.
       </p>
     </div>
   );
@@ -674,40 +809,6 @@ function AddRewardModal({ onClose, onSave }) {
       >
         Belohnung speichern
       </button>
-    </ModalShell>
-  );
-}
-
-function PickMemberModal({ title, members, defaultId, onClose, onPick }) {
-  if (members.length === 0) {
-    return (
-      <ModalShell title={title} onClose={onClose}>
-        <p style={{ fontSize: "13px", color: "#8a897f" }}>Füge zuerst eine Person unter Verwalten hinzu.</p>
-      </ModalShell>
-    );
-  }
-  return (
-    <ModalShell title={title} onClose={onClose}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-        {members.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => onPick(m.id)}
-            style={{
-              border: m.id === defaultId ? `2px solid ${m.color.bg}` : "1px solid #ddd",
-              background: "#fff",
-              borderRadius: "10px",
-              padding: "10px 14px",
-              fontSize: "14px",
-              fontWeight: 500,
-              color: "#2a2a26",
-              cursor: "pointer",
-            }}
-          >
-            {m.name}
-          </button>
-        ))}
-      </div>
     </ModalShell>
   );
 }
