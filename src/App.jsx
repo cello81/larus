@@ -114,6 +114,7 @@ export default function HouseholdApp() {
   const [showAddReward, setShowAddReward] = useState(false);
   const [pinTargetMember, setPinTargetMember] = useState(null);
   const [completeAtTask, setCompleteAtTask] = useState(null);
+  const [historyTask, setHistoryTask] = useState(null);
 
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installDismissed, setInstallDismissed] = useState(
@@ -370,6 +371,7 @@ export default function HouseholdApp() {
             onDeleteTask={deleteTask}
             onAddTask={() => setShowAddTask(true)}
             onAddZone={() => setShowAddZone(true)}
+            onOpenHistory={(t) => setHistoryTask(t)}
           />
         )}
         {tab === "board" && (
@@ -438,6 +440,9 @@ export default function HouseholdApp() {
             setCompleteAtTask(null);
           }}
         />
+      )}
+      {historyTask && (
+        <TaskHistoryModal task={historyTask} log={log} onClose={() => setHistoryTask(null)} />
       )}
     </div>
   );
@@ -621,7 +626,11 @@ function DirtBar({ percent, color }) {
   );
 }
 
-function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone }) {
+const ZONE_CARD_COLORS = ["#3E5C76", "#4B6B43", "#8A6D3B", "#6B4E71", "#2F4538", "#8A4B3B", "#4B6B85", "#6B5E4B"];
+
+function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone, onOpenHistory }) {
+  const [openZoneId, setOpenZoneId] = useState(null);
+
   const visibleTasks = useMemo(() => {
     if (isAdmin) return tasks;
     return tasks.filter((t) => !t.assignedTo || t.assignedTo === currentUserId);
@@ -636,20 +645,80 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
       byZone[key].push(t);
     });
 
-    function buildGroup(zone, taskList) {
+    function buildGroup(zone, taskList, colorIndex) {
       const items = taskList
         .map((t) => ({ task: t, dirt: getDirtiness(t, log) }))
         .sort((a, b) => b.dirt.ratio - a.dirt.ratio);
       const avgRatio = items.length === 0 ? 0 : items.reduce((sum, x) => sum + x.dirt.ratio, 0) / items.length;
-      return { zone, items, avgRatio };
+      return { zone, items, avgRatio, cardColor: ZONE_CARD_COLORS[colorIndex % ZONE_CARD_COLORS.length] };
     }
 
-    const groups = zones.map((z) => buildGroup(z, byZone[z.id]));
+    const groups = zones.map((z, i) => buildGroup(z, byZone[z.id], i));
     if (byZone.__none.length > 0) {
-      groups.push(buildGroup({ id: "__none", name: "Sonstiges" }, byZone.__none));
+      groups.push(buildGroup({ id: "__none", name: "Sonstiges" }, byZone.__none, zones.length));
     }
     return groups.filter((g) => g.items.length > 0).sort((a, b) => b.avgRatio - a.avgRatio);
   }, [visibleTasks, zones, log]);
+
+  const openGroup = grouped.find((g) => g.zone.id === openZoneId);
+
+  if (openGroup) {
+    return (
+      <div
+        style={{
+          margin: "-14px",
+          padding: "14px",
+          minHeight: "calc(100% + 28px)",
+          background: openGroup.cardColor,
+        }}
+      >
+        <button
+          onClick={() => setOpenZoneId(null)}
+          style={{ border: "none", background: "none", color: "rgba(255,255,255,0.85)", cursor: "pointer", display: "flex", alignItems: "center", gap: "4px", fontSize: "13px", padding: 0, marginBottom: "14px" }}
+        >
+          <ArrowLeft size={15} /> Alle Bereiche
+        </button>
+        <div style={{ fontSize: "19px", fontWeight: 700, color: "#fff", marginBottom: "10px" }}>{openGroup.zone.name}</div>
+
+        {isAdmin && (
+          <button
+            onClick={onAddTask}
+            style={{
+              width: "100%",
+              border: "1px dashed rgba(255,255,255,0.4)",
+              borderRadius: "12px",
+              background: "transparent",
+              padding: "9px",
+              color: "#fff",
+              fontSize: "13px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "6px",
+              marginBottom: "14px",
+              cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Aufgabe in diesem Bereich
+          </button>
+        )}
+
+        {openGroup.items.map(({ task: t, dirt }) => (
+          <ZoneTaskRow
+            key={t.id}
+            task={t}
+            dirt={dirt}
+            assignee={t.assignedTo ? memberById(t.assignedTo) : null}
+            isAdmin={isAdmin}
+            onComplete={() => onComplete(t)}
+            onCompleteAt={() => onCompleteAt(t)}
+            onDelete={() => onDeleteTask(t.id)}
+            onOpenHistory={() => onOpenHistory(t)}
+          />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -670,34 +739,53 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
         </p>
       )}
 
-      {grouped.map((g) => {
-        const zoneColor = g.avgRatio >= 1 ? OVERDUE_COLOR : g.avgRatio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
-        return (
-          <div key={g.zone.id} style={{ marginBottom: "18px" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
-              <span style={{ fontSize: "13px", fontWeight: 600, color: "#2a2a26" }}>{g.zone.name}</span>
-              <span style={{ fontSize: "11px", fontWeight: 600, color: zoneColor }}>
-                {Math.round(Math.min(g.avgRatio, 1.5) * 100)}%
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+        {grouped.map((g) => {
+          const dotColor = g.avgRatio >= 1 ? OVERDUE_COLOR : g.avgRatio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
+          const overdueCount = g.items.filter((x) => x.dirt.overdueDays > 0).length;
+          return (
+            <button
+              key={g.zone.id}
+              onClick={() => setOpenZoneId(g.zone.id)}
+              style={{
+                position: "relative",
+                textAlign: "left",
+                border: "none",
+                borderRadius: "14px",
+                background: g.cardColor,
+                color: "#fff",
+                padding: "14px",
+                minHeight: "96px",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                cursor: "pointer",
+              }}
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  top: "10px",
+                  right: "10px",
+                  width: "22px",
+                  height: "22px",
+                  borderRadius: "50%",
+                  background: "rgba(255,255,255,0.9)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: dotColor }} />
+              </div>
+              <span style={{ fontSize: "14px", fontWeight: 600, paddingRight: "26px" }}>{g.zone.name}</span>
+              <span style={{ fontSize: "11.5px", opacity: 0.85 }}>
+                {overdueCount > 0 ? `${overdueCount} überfällig` : `${g.items.length} Aufgabe(n)`}
               </span>
-            </div>
-            <div style={{ marginBottom: "8px" }}>
-              <DirtBar percent={Math.min(g.avgRatio, 1) * 100} color={zoneColor} />
-            </div>
-            {g.items.map(({ task: t, dirt }) => (
-              <TaskRow
-                key={t.id}
-                task={t}
-                dirt={dirt}
-                assignee={t.assignedTo ? memberById(t.assignedTo) : null}
-                isAdmin={isAdmin}
-                onComplete={() => onComplete(t)}
-                onCompleteAt={() => onCompleteAt(t)}
-                onDelete={() => onDeleteTask(t.id)}
-              />
-            ))}
-          </div>
-        );
-      })}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -717,53 +805,86 @@ const dashedBtnStyle = {
   cursor: "pointer",
 };
 
-function TaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete }) {
+function PillBar({ ratio, color }) {
+  const fillPercent = Math.max(4, Math.min(ratio, 1) * 100);
   return (
-    <div style={{ background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
-        <div
-          style={{
-            width: "8px",
-            height: "8px",
-            borderRadius: "50%",
-            background: dirt.color,
-            flexShrink: 0,
-          }}
-        />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{task.name}</span>
-            <span style={{ fontSize: "11px", fontWeight: 600, color: dirt.color }}>
-              {Math.round(Math.min(dirt.ratio, 1.5) * 100)}%
-            </span>
-          </div>
-          <div style={{ fontSize: "11.5px", color: dirt.overdueDays > 0 ? OVERDUE_COLOR : "#a0a09a", marginTop: "1px", fontWeight: dirt.overdueDays > 0 ? 600 : 400 }}>
-            {dirt.overdueDays > 0
-              ? `${dirt.overdueDays} Tag(e) überfällig`
-              : dirt.daysUntilDue === 0
-              ? "Heute fällig"
-              : `Fällig in ${dirt.daysUntilDue} Tag(en)`}
-            {" · "}{task.points} Pkt.
-            {assignee ? ` · ${assignee.name}` : ""}
-            {!dirt.everCompleted && " · noch nie erledigt"}
-          </div>
-        </div>
-        <button onClick={onCompleteAt} title="Mit Datum erledigen" style={{ border: "none", background: "none", color: "#a0a09a", cursor: "pointer", padding: "4px" }}>
-          <Clock size={16} />
-        </button>
-        <button onClick={onComplete} style={{ border: "none", background: "#2F4538", color: "#fff", borderRadius: "8px", padding: "6px 12px", fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
-          Erledigt
-        </button>
-        {isAdmin && (
-          <button onClick={onDelete} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer", padding: "2px" }}>
-            <Trash2 size={14} />
-          </button>
-        )}
-      </div>
-      <DirtBar percent={Math.min(dirt.ratio, 1) * 100} color={dirt.color} />
+    <div
+      style={{
+        position: "relative",
+        width: "78px",
+        height: "22px",
+        borderRadius: "11px",
+        background: "rgba(255,255,255,0.28)",
+        overflow: "hidden",
+        flexShrink: 0,
+      }}
+    >
+      <div style={{ position: "absolute", inset: 0, left: 0, width: `${fillPercent}%`, background: color, borderRadius: "11px" }} />
+      {[25, 50, 75].map((p) => (
+        <div key={p} style={{ position: "absolute", top: "3px", bottom: "3px", left: `${p}%`, width: "1px", background: "rgba(255,255,255,0.5)" }} />
+      ))}
     </div>
   );
 }
+
+function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory }) {
+  return (
+    <div
+      onClick={onOpenHistory}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "10px",
+        padding: "12px 2px",
+        borderBottom: "1px solid rgba(255,255,255,0.18)",
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: "14.5px", fontWeight: 600, color: "#fff" }}>{task.name}</div>
+        <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)", marginTop: "1px" }}>
+          {task.points} Pkt.{assignee ? ` · ${assignee.name}` : ""}
+        </div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "5px", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <PillBar ratio={dirt.ratio} color={dirt.color} />
+          <button
+            onClick={(e) => { e.stopPropagation(); onCompleteAt(); }}
+            title="Mit Datum erledigen"
+            style={{ border: "none", background: "rgba(255,255,255,0.2)", color: "#fff", borderRadius: "50%", width: "26px", height: "26px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+          >
+            <Clock size={13} />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onComplete(); }}
+            title="Erledigt"
+            style={{ border: "none", background: "rgba(255,255,255,0.9)", color: "#2a2a26", borderRadius: "50%", width: "26px", height: "26px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+          >
+            <CheckCircle2 size={15} />
+          </button>
+          {isAdmin && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              style={{ border: "none", background: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: "2px" }}
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
+        <span style={{ fontSize: "10.5px", color: "rgba(255,255,255,0.85)", fontWeight: dirt.overdueDays > 0 ? 700 : 400 }}>
+          {dirt.overdueDays > 0
+            ? `${dirt.overdueDays} Tg. überfällig`
+            : dirt.daysUntilDue === 0
+            ? "Heute fällig"
+            : `Fällig in ${dirt.daysUntilDue} Tg.`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 
 function BoardView({ members, pointsByMember, rewards, isAdmin, onRedeem, onAddReward, onDeleteReward }) {
   const { current, overall } = pointsByMember;
@@ -1093,6 +1214,69 @@ function CompleteAtModal({ task, onClose, onSave }) {
       >
         Speichern
       </button>
+    </ModalShell>
+  );
+}
+
+function TaskHistoryModal({ task, log, onClose }) {
+  const freq = taskFrequencyDays(task);
+  const freqMs = freq * DAY_MS;
+  const entries = log
+    .filter((e) => e.taskId === task.id && e.type === "complete")
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const starts = [task.createdAt ?? (entries[0]?.timestamp ?? Date.now()), ...entries.map((e) => e.timestamp)];
+  const teeth = entries.map((e, i) => ({
+    start: starts[i],
+    end: e.timestamp,
+    memberName: e.memberName,
+    done: true,
+  }));
+  const lastStart = entries.length ? entries[entries.length - 1].timestamp : (task.createdAt ?? Date.now());
+  teeth.push({ start: lastStart, end: Date.now(), memberName: null, done: false });
+
+  const fmt = (ts) => new Date(ts).toLocaleDateString("de-CH", { day: "2-digit", month: "2-digit" });
+
+  return (
+    <ModalShell title={`Verlauf: ${task.name}`} onClose={onClose}>
+      <div style={{ display: "flex", gap: "10px", overflowX: "auto", paddingBottom: "6px", marginBottom: "12px" }}>
+        {teeth.map((t, i) => {
+          const ratio = freqMs > 0 ? (t.end - t.start) / freqMs : 0;
+          const peak = Math.min(ratio, 1.5) / 1.5;
+          const color = ratio >= 1 ? OVERDUE_COLOR : ratio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
+          const h = Math.max(4, peak * 60);
+          return (
+            <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0, width: "42px" }}>
+              <svg width="42" height="66" viewBox="0 0 42 66">
+                <line x1="0" y1="60" x2="42" y2="60" stroke="#EDECE4" strokeWidth="1" />
+                <polygon points={`0,60 34,${60 - h} 34,60`} fill={color} opacity={t.done ? 1 : 0.55} />
+                {t.done && <circle cx="34" cy={60 - h} r="4" fill={color} stroke="#fff" strokeWidth="1.5" />}
+              </svg>
+              <span style={{ fontSize: "9.5px", color: "#a0a09a", marginTop: "2px", whiteSpace: "nowrap" }}>
+                {t.done ? fmt(t.end) : "jetzt"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: "12px", color: "#a0a09a", marginBottom: "6px", fontWeight: 500 }}>
+        Erledigt-Verlauf
+      </div>
+      {entries.length === 0 ? (
+        <p style={{ fontSize: "13px", color: "#c6c5bc" }}>Noch nie erledigt.</p>
+      ) : (
+        <div style={{ maxHeight: "180px", overflowY: "auto" }}>
+          {[...entries].reverse().map((e) => (
+            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid #f0efe9", fontSize: "13px" }}>
+              <span style={{ color: "#2a2a26" }}>{e.memberName}</span>
+              <span style={{ color: "#a0a09a" }}>
+                {new Date(e.timestamp).toLocaleString("de-CH", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </ModalShell>
   );
 }
