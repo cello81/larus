@@ -1,0 +1,11 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #E9E8E1;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: env(safe-area-inset-top, 0) 0 env(safe-area-inset-bottom, 0);
+}
+#root { width: 100%; display: flex; justify-content: center; }
