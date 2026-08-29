@@ -1,7 +1,7 @@
 # Larus
 
 Familien-App zur Verwaltung von Haushaltsaufgaben, Punkten und
-Belohnungen. Läuft als PWA auf `larus.marcini.ch`.
+Belohnungen. Läuft als PWA.
 
 ## Lokal entwickeln
 
