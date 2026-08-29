@@ -92,6 +92,7 @@ function getDirtiness(task, log) {
     everCompleted: last !== null,
     color,
     overdueDays: ratio > 1 ? Math.round(days - freq) : 0,
+    daysUntilDue: ratio <= 1 ? Math.max(0, Math.round(freq - days)) : 0,
   };
 }
 
@@ -736,14 +737,15 @@ function TaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDe
               {Math.round(Math.min(dirt.ratio, 1.5) * 100)}%
             </span>
           </div>
-          <div style={{ fontSize: "11.5px", color: "#a0a09a", marginTop: "1px" }}>
-            {!dirt.everCompleted
-              ? "Noch nie erledigt"
-              : dirt.overdueDays > 0
+          <div style={{ fontSize: "11.5px", color: dirt.overdueDays > 0 ? OVERDUE_COLOR : "#a0a09a", marginTop: "1px", fontWeight: dirt.overdueDays > 0 ? 600 : 400 }}>
+            {dirt.overdueDays > 0
               ? `${dirt.overdueDays} Tag(e) überfällig`
-              : `vor ${dirt.days} Tag(en) erledigt`}
+              : dirt.daysUntilDue === 0
+              ? "Heute fällig"
+              : `Fällig in ${dirt.daysUntilDue} Tag(en)`}
             {" · "}{task.points} Pkt.
             {assignee ? ` · ${assignee.name}` : ""}
+            {!dirt.everCompleted && " · noch nie erledigt"}
           </div>
         </div>
         <button onClick={onCompleteAt} title="Mit Datum erledigen" style={{ border: "none", background: "none", color: "#a0a09a", cursor: "pointer", padding: "4px" }}>
