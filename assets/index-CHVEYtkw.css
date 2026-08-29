@@ -1,1 +1,0 @@
-*{box-sizing:border-box}body{min-height:100vh;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0);background:#e9e8e1;justify-content:center;align-items:flex-start;margin:0;display:flex}#root{justify-content:center;width:100%;display:flex}
