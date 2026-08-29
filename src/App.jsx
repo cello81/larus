@@ -12,7 +12,7 @@ const MEMBER_COLORS = [
 
 const DEFAULT_MEMBERS = [
   { name: "Tamara", role: "admin" },
-  { name: "Marcel", role: "member" },
+  { name: "Marcel", role: "admin" },
   { name: "Lya", role: "member" },
   { name: "Jana", role: "member" },
   { name: "Nela", role: "member" },
@@ -102,6 +102,7 @@ export default function HouseholdApp() {
   const [tasks, setTasks] = useState([]);
   const [rewards, setRewards] = useState([]);
   const [log, setLog] = useState([]);
+  const [statsResetAt, setStatsResetAt] = useState(0);
   const [tab, setTab] = useState("tasks");
   const [currentUser, setCurrentUser] = useState(null);
   const [pendingPinMember, setPendingPinMember] = useState(null);
@@ -144,6 +145,7 @@ export default function HouseholdApp() {
       setTasks(data.tasks || []);
       setRewards(data.rewards || []);
       setLog(data.log || []);
+      setStatsResetAt(data.statsResetAt || 0);
 
       const savedUserId = localStorage.getItem(LOGIN_KEY);
       if (savedUserId && loadedMembers.some((m) => m.id === savedUserId)) {
@@ -169,13 +171,27 @@ export default function HouseholdApp() {
   }, []);
 
   const pointsByMember = useMemo(() => {
-    const totals = {};
-    members.forEach((m) => (totals[m.id] = 0));
-    log.forEach((entry) => {
-      totals[entry.memberId] = (totals[entry.memberId] || 0) + entry.points;
+    const current = {};
+    const overall = {};
+    members.forEach((m) => {
+      current[m.id] = 0;
+      overall[m.id] = 0;
     });
-    return totals;
-  }, [members, log]);
+    log.forEach((entry) => {
+      overall[entry.memberId] = (overall[entry.memberId] || 0) + entry.points;
+      if (entry.timestamp >= statsResetAt) {
+        current[entry.memberId] = (current[entry.memberId] || 0) + entry.points;
+      }
+    });
+    return { current, overall };
+  }, [members, log, statsResetAt]);
+
+  function resetStats() {
+    persist("statsResetAt", Date.now(), setStatsResetAt);
+  }
+  function setMemberRole(id, role) {
+    persist("members", members.map((m) => (m.id === id ? { ...m, role } : m)), setMembers);
+  }
 
   function addTask({ name, zoneId, frequencyDays, points, assignedTo }) {
     const next = [
@@ -347,6 +363,7 @@ export default function HouseholdApp() {
             log={log}
             memberById={memberById}
             isAdmin={isAdmin}
+            currentUserId={currentUser}
             onComplete={completeTask}
             onCompleteAt={(t) => setCompleteAtTask(t)}
             onDeleteTask={deleteTask}
@@ -370,11 +387,14 @@ export default function HouseholdApp() {
           <SettingsView
             members={members}
             zones={zones}
+            currentUserId={currentUser}
             onAddMember={() => setShowAddMember(true)}
             onDeleteMember={deleteMember}
             onSetPin={(m) => setPinTargetMember(m)}
+            onSetRole={setMemberRole}
             onAddZone={() => setShowAddZone(true)}
             onDeleteZone={deleteZone}
+            onResetStats={resetStats}
           />
         )}
       </div>
@@ -600,12 +620,17 @@ function DirtBar({ percent, color }) {
   );
 }
 
-function TasksView({ tasks, zones, log, memberById, isAdmin, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone }) {
+function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone }) {
+  const visibleTasks = useMemo(() => {
+    if (isAdmin) return tasks;
+    return tasks.filter((t) => !t.assignedTo || t.assignedTo === currentUserId);
+  }, [tasks, isAdmin, currentUserId]);
+
   const grouped = useMemo(() => {
     const byZone = {};
     zones.forEach((z) => (byZone[z.id] = []));
     byZone.__none = [];
-    tasks.forEach((t) => {
+    visibleTasks.forEach((t) => {
       const key = t.zoneId && byZone[t.zoneId] ? t.zoneId : "__none";
       byZone[key].push(t);
     });
@@ -623,7 +648,7 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, onComplete, onCompl
       groups.push(buildGroup({ id: "__none", name: "Sonstiges" }, byZone.__none));
     }
     return groups.filter((g) => g.items.length > 0).sort((a, b) => b.avgRatio - a.avgRatio);
-  }, [tasks, zones, log]);
+  }, [visibleTasks, zones, log]);
 
   return (
     <div>
@@ -739,7 +764,8 @@ function TaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDe
 }
 
 function BoardView({ members, pointsByMember, rewards, isAdmin, onRedeem, onAddReward, onDeleteReward }) {
-  const ranked = [...members].sort((a, b) => (pointsByMember[b.id] || 0) - (pointsByMember[a.id] || 0));
+  const { current, overall } = pointsByMember;
+  const ranked = [...members].sort((a, b) => (current[b.id] || 0) - (current[a.id] || 0));
   return (
     <div>
       {ranked.map((m, i) => (
@@ -748,8 +774,11 @@ function BoardView({ members, pointsByMember, rewards, isAdmin, onRedeem, onAddR
           <div style={{ width: "34px", height: "34px", borderRadius: "50%", background: m.color.bg, color: m.color.text, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", fontWeight: 600 }}>
             {m.name.slice(0, 2).toUpperCase()}
           </div>
-          <div style={{ flex: 1, fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{m.name}</div>
-          <div style={{ fontSize: "15px", fontWeight: 600, color: "#E0A72E" }}>{pointsByMember[m.id] || 0} Pkt.</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{m.name}</div>
+            <div style={{ fontSize: "11px", color: "#a0a09a" }}>Gesamt: {overall[m.id] || 0} Pkt.</div>
+          </div>
+          <div style={{ fontSize: "15px", fontWeight: 600, color: "#E0A72E" }}>{current[m.id] || 0} Pkt.</div>
         </div>
       ))}
 
@@ -808,7 +837,9 @@ function HistoryView({ log }) {
   );
 }
 
-function SettingsView({ members, zones, onAddMember, onDeleteMember, onSetPin, onAddZone, onDeleteZone }) {
+function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats }) {
+  const [confirmingReset, setConfirmingReset] = useState(false);
+
   return (
     <div>
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "0 0 6px", fontWeight: 500 }}>
@@ -825,6 +856,14 @@ function SettingsView({ members, zones, onAddMember, onDeleteMember, onSetPin, o
               <span style={{ marginLeft: "6px", fontSize: "10px", color: "#E0A72E", fontWeight: 600, letterSpacing: "0.03em" }}>ADMIN</span>
             )}
           </div>
+          {m.id !== currentUserId && (
+            <button
+              onClick={() => onSetRole(m.id, m.role === "admin" ? "member" : "admin")}
+              style={{ border: "1px solid #ddd", background: "none", color: "#5a5a52", cursor: "pointer", borderRadius: "8px", padding: "4px 8px", fontSize: "11px" }}
+            >
+              {m.role === "admin" ? "Admin entfernen" : "Zum Admin machen"}
+            </button>
+          )}
           <button onClick={() => onSetPin(m)} style={{ border: "none", background: "none", color: m.pin ? "#2F4538" : "#c6c5bc", cursor: "pointer", display: "flex", alignItems: "center", padding: "4px" }} title="Code setzen">
             <Lock size={14} />
           </button>
@@ -854,8 +893,45 @@ function SettingsView({ members, zones, onAddMember, onDeleteMember, onSetPin, o
         <Plus size={16} /> Bereich hinzufügen
       </button>
 
+      <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
+        Statistik
+      </div>
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "12px" }}>
+        <p style={{ fontSize: "12.5px", color: "#5a5a52", margin: "0 0 10px", lineHeight: 1.5 }}>
+          Setzt die aktuelle Punkte-Rangliste für alle auf 0 zurück (z.B. für eine neue Runde). Der Verlauf und die Gesamt-Statistik pro Person bleiben erhalten.
+        </p>
+        {!confirmingReset ? (
+          <button
+            onClick={() => setConfirmingReset(true)}
+            style={{ border: "1px solid #f0d9d3", background: "none", color: "#8A4B3B", borderRadius: "10px", padding: "9px", fontSize: "13px", fontWeight: 600, cursor: "pointer", width: "100%" }}
+          >
+            Statistik zurücksetzen
+          </button>
+        ) : (
+          <div>
+            <p style={{ fontSize: "12.5px", color: "#8A4B3B", fontWeight: 600, margin: "0 0 8px" }}>
+              Sicher? Die aktuelle Rangliste wird auf 0 gesetzt.
+            </p>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                onClick={() => { onResetStats(); setConfirmingReset(false); }}
+                style={{ flex: 1, border: "none", background: "#8A4B3B", color: "#fff", borderRadius: "10px", padding: "9px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}
+              >
+                Ja, zurücksetzen
+              </button>
+              <button
+                onClick={() => setConfirmingReset(false)}
+                style={{ flex: 1, border: "1px solid #ddd", background: "none", color: "#5a5a52", borderRadius: "10px", padding: "9px", fontSize: "13px", cursor: "pointer" }}
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <p style={{ fontSize: "12px", color: "#c6c5bc", marginTop: "18px", lineHeight: 1.5 }}>
-        Alle Daten werden geteilt gespeichert. Nur Admins (Tamara) können Aufgaben, Bereiche und Belohnungen verwalten.
+        Alle Daten werden geteilt gespeichert. Nur Admins können Aufgaben, Bereiche und Belohnungen verwalten.
         Das Schloss-Symbol setzt einen optionalen 4-stelligen Code fürs Anmelden auf diesem Gerät – kein Ersatz für ein echtes Passwort, nur ein einfacher Schutz innerhalb der Familie.
       </p>
     </div>
