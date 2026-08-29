@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock } from "lucide-react";
+import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock } from "lucide-react";
 
 const MEMBER_COLORS = [
   { bg: "#2F4538", text: "#FFFFFF" },
@@ -111,6 +111,7 @@ export default function HouseholdApp() {
   const [showAddZone, setShowAddZone] = useState(false);
   const [showAddReward, setShowAddReward] = useState(false);
   const [pinTargetMember, setPinTargetMember] = useState(null);
+  const [completeAtTask, setCompleteAtTask] = useState(null);
 
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installDismissed, setInstallDismissed] = useState(
@@ -218,7 +219,7 @@ export default function HouseholdApp() {
     persist("rewards", rewards.filter((r) => r.id !== id), setRewards);
   }
 
-  function completeTask(task) {
+  function completeTask(task, timestamp) {
     const member = members.find((m) => m.id === currentUser);
     if (!member) return;
     const entry = {
@@ -229,7 +230,7 @@ export default function HouseholdApp() {
       memberId: member.id,
       memberName: member.name,
       points: task.points,
-      timestamp: Date.now(),
+      timestamp: timestamp || Date.now(),
     };
     persist("log", [entry, ...log], setLog);
   }
@@ -347,6 +348,7 @@ export default function HouseholdApp() {
             memberById={memberById}
             isAdmin={isAdmin}
             onComplete={completeTask}
+            onCompleteAt={(t) => setCompleteAtTask(t)}
             onDeleteTask={deleteTask}
             onAddTask={() => setShowAddTask(true)}
             onAddZone={() => setShowAddZone(true)}
@@ -404,6 +406,16 @@ export default function HouseholdApp() {
           member={pinTargetMember}
           onClose={() => setPinTargetMember(null)}
           onSave={(pin) => setMemberPin(pinTargetMember.id, pin)}
+        />
+      )}
+      {completeAtTask && (
+        <CompleteAtModal
+          task={completeAtTask}
+          onClose={() => setCompleteAtTask(null)}
+          onSave={(timestamp) => {
+            completeTask(completeAtTask, timestamp);
+            setCompleteAtTask(null);
+          }}
         />
       )}
     </div>
@@ -588,7 +600,7 @@ function DirtBar({ percent, color }) {
   );
 }
 
-function TasksView({ tasks, zones, log, memberById, isAdmin, onComplete, onDeleteTask, onAddTask, onAddZone }) {
+function TasksView({ tasks, zones, log, memberById, isAdmin, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone }) {
   const grouped = useMemo(() => {
     const byZone = {};
     zones.forEach((z) => (byZone[z.id] = []));
@@ -597,22 +609,20 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, onComplete, onDelet
       const key = t.zoneId && byZone[t.zoneId] ? t.zoneId : "__none";
       byZone[key].push(t);
     });
-    const groups = zones.map((z) => ({
-      zone: z,
-      tasks: byZone[z.id],
-      avgRatio:
-        byZone[z.id].length === 0
-          ? 0
-          : byZone[z.id].reduce((sum, t) => sum + getDirtiness(t, log).ratio, 0) / byZone[z.id].length,
-    }));
-    if (byZone.__none.length > 0) {
-      groups.push({
-        zone: { id: "__none", name: "Sonstiges" },
-        tasks: byZone.__none,
-        avgRatio: byZone.__none.reduce((sum, t) => sum + getDirtiness(t, log).ratio, 0) / byZone.__none.length,
-      });
+
+    function buildGroup(zone, taskList) {
+      const items = taskList
+        .map((t) => ({ task: t, dirt: getDirtiness(t, log) }))
+        .sort((a, b) => b.dirt.ratio - a.dirt.ratio);
+      const avgRatio = items.length === 0 ? 0 : items.reduce((sum, x) => sum + x.dirt.ratio, 0) / items.length;
+      return { zone, items, avgRatio };
     }
-    return groups.filter((g) => g.tasks.length > 0).sort((a, b) => b.avgRatio - a.avgRatio);
+
+    const groups = zones.map((z) => buildGroup(z, byZone[z.id]));
+    if (byZone.__none.length > 0) {
+      groups.push(buildGroup({ id: "__none", name: "Sonstiges" }, byZone.__none));
+    }
+    return groups.filter((g) => g.items.length > 0).sort((a, b) => b.avgRatio - a.avgRatio);
   }, [tasks, zones, log]);
 
   return (
@@ -647,14 +657,15 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, onComplete, onDelet
             <div style={{ marginBottom: "8px" }}>
               <DirtBar percent={Math.min(g.avgRatio, 1) * 100} color={zoneColor} />
             </div>
-            {g.tasks.map((t) => (
+            {g.items.map(({ task: t, dirt }) => (
               <TaskRow
                 key={t.id}
                 task={t}
-                dirt={getDirtiness(t, log)}
+                dirt={dirt}
                 assignee={t.assignedTo ? memberById(t.assignedTo) : null}
                 isAdmin={isAdmin}
                 onComplete={() => onComplete(t)}
+                onCompleteAt={() => onCompleteAt(t)}
                 onDelete={() => onDeleteTask(t.id)}
               />
             ))}
@@ -680,12 +691,26 @@ const dashedBtnStyle = {
   cursor: "pointer",
 };
 
-function TaskRow({ task, dirt, assignee, isAdmin, onComplete, onDelete }) {
+function TaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete }) {
   return (
     <div style={{ background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+        <div
+          style={{
+            width: "8px",
+            height: "8px",
+            borderRadius: "50%",
+            background: dirt.color,
+            flexShrink: 0,
+          }}
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{task.name}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{task.name}</span>
+            <span style={{ fontSize: "11px", fontWeight: 600, color: dirt.color }}>
+              {Math.round(Math.min(dirt.ratio, 1.5) * 100)}%
+            </span>
+          </div>
           <div style={{ fontSize: "11.5px", color: "#a0a09a", marginTop: "1px" }}>
             {!dirt.everCompleted
               ? "Noch nie erledigt"
@@ -696,6 +721,9 @@ function TaskRow({ task, dirt, assignee, isAdmin, onComplete, onDelete }) {
             {assignee ? ` · ${assignee.name}` : ""}
           </div>
         </div>
+        <button onClick={onCompleteAt} title="Mit Datum erledigen" style={{ border: "none", background: "none", color: "#a0a09a", cursor: "pointer", padding: "4px" }}>
+          <Clock size={16} />
+        </button>
         <button onClick={onComplete} style={{ border: "none", background: "#2F4538", color: "#fff", borderRadius: "8px", padding: "6px 12px", fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
           Erledigt
         </button>
@@ -953,6 +981,39 @@ function AddRewardModal({ onClose, onSave }) {
         }}
       >
         Belohnung speichern
+      </button>
+    </ModalShell>
+  );
+}
+
+function CompleteAtModal({ task, onClose, onSave }) {
+  function toLocalInputValue(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  const [value, setValue] = useState(() => toLocalInputValue(new Date()));
+  const [error, setError] = useState("");
+
+  return (
+    <ModalShell title={`"${task.name}" erledigt am…`} onClose={onClose}>
+      <input
+        style={inputStyle}
+        type="datetime-local"
+        max={toLocalInputValue(new Date())}
+        value={value}
+        onChange={(e) => { setValue(e.target.value); setError(""); }}
+      />
+      {error && <div style={{ color: "#8A4B3B", fontSize: "12px", marginBottom: "8px" }}>{error}</div>}
+      <button
+        style={primaryBtn}
+        onClick={() => {
+          const ts = new Date(value).getTime();
+          if (!value || Number.isNaN(ts)) return setError("Bitte ein gültiges Datum wählen.");
+          if (ts > Date.now()) return setError("Das Datum darf nicht in der Zukunft liegen.");
+          onSave(ts);
+        }}
+      >
+        Speichern
       </button>
     </ModalShell>
   );
