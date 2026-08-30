@@ -414,6 +414,7 @@ export default function HouseholdApp() {
             allowanceProgress={allowanceProgress}
             rewards={rewards}
             isAdmin={isAdmin}
+            currentUserId={currentUser}
             onRedeem={redeemReward}
             onAddReward={() => setShowAddReward(true)}
             onDeleteReward={deleteReward}
@@ -673,7 +674,7 @@ const ZONE_CARD_COLORS = ["#3E5C76", "#4B6B43", "#8A6D3B", "#6B4E71", "#2F4538",
 
 function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone, onOpenHistory }) {
   const [openZoneId, setOpenZoneId] = useState(null);
-  const [viewMode, setViewMode] = useState("grid");
+  const [viewMode, setViewMode] = useState("list");
 
   const visibleTasks = useMemo(() => {
     if (isAdmin) return tasks;
@@ -683,6 +684,13 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
   const zoneNameById = useMemo(() => {
     const map = {};
     zones.forEach((z) => (map[z.id] = z.name));
+    return map;
+  }, [zones]);
+
+  const zoneColorById = useMemo(() => {
+    const map = {};
+    zones.forEach((z, i) => (map[z.id] = ZONE_CARD_COLORS[i % ZONE_CARD_COLORS.length]));
+    map.__none = ZONE_CARD_COLORS[zones.length % ZONE_CARD_COLORS.length];
     return map;
   }, [zones]);
 
@@ -882,11 +890,13 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
       ) : (
         <div>
           {flatSorted.map(({ task: t, dirt }) => (
-            <FlatTaskRow
+            <ZoneTaskRow
               key={t.id}
               task={t}
               dirt={dirt}
-              zoneName={t.zoneId ? zoneNameById[t.zoneId] : null}
+              zoneName={t.zoneId ? zoneNameById[t.zoneId] : "Sonstiges"}
+              color={t.zoneId ? zoneColorById[t.zoneId] : zoneColorById.__none}
+              asCard
               assignee={t.assignedTo ? memberById(t.assignedTo) : null}
               isAdmin={isAdmin}
               onComplete={() => onComplete(t)}
@@ -938,19 +948,20 @@ function PillBar({ ratio, color }) {
   );
 }
 
-function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory }) {
+function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory, zoneName, color, asCard }) {
   return (
     <div
-      style={{
-        padding: "12px 2px",
-        borderBottom: "1px solid rgba(255,255,255,0.18)",
-      }}
+      style={
+        asCard
+          ? { background: color, borderRadius: "14px", padding: "12px", marginBottom: "10px" }
+          : { padding: "12px 2px", borderBottom: "1px solid rgba(255,255,255,0.18)" }
+      }
     >
       <div onClick={onOpenHistory} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", cursor: "pointer", marginBottom: "10px" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "14.5px", fontWeight: 600, color: "#fff" }}>{task.name}</div>
           <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)", marginTop: "1px" }}>
-            {task.points} Pkt.{assignee ? ` · ${assignee.name}` : ""}
+            {task.points} Pkt.{zoneName ? ` · ${zoneName}` : ""}{assignee ? ` · ${assignee.name}` : ""}
           </div>
           <span style={{ fontSize: "10.5px", color: "rgba(255,255,255,0.85)", fontWeight: dirt.overdueDays > 0 ? 700 : 400 }}>
             {dirt.overdueDays > 0
@@ -1003,70 +1014,12 @@ function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, 
   );
 }
 
-
-function FlatTaskRow({ task, dirt, zoneName, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory }) {
-  return (
-    <div style={{ background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
-      <div onClick={onOpenHistory} style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", cursor: "pointer" }}>
-        <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: dirt.color, flexShrink: 0 }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{task.name}</div>
-          <div style={{ fontSize: "11.5px", color: dirt.overdueDays > 0 ? OVERDUE_COLOR : "#a0a09a", marginTop: "1px", fontWeight: dirt.overdueDays > 0 ? 600 : 400 }}>
-            {dirt.overdueDays > 0
-              ? `${dirt.overdueDays} Tag(e) überfällig`
-              : dirt.daysUntilDue === 0
-              ? "Heute fällig"
-              : `Fällig in ${dirt.daysUntilDue} Tag(en)`}
-            {zoneName ? ` · ${zoneName}` : ""}
-            {assignee ? ` · ${assignee.name}` : ""}
-          </div>
-        </div>
-      </div>
-      <DirtBar percent={Math.min(dirt.ratio, 1) * 100} color={dirt.color} />
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onComplete(); }}
-          style={{
-            flex: 1,
-            border: "none",
-            background: "#2F4538",
-            color: "#fff",
-            borderRadius: "12px",
-            height: "44px",
-            fontSize: "14.5px",
-            fontWeight: 700,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "7px",
-          }}
-        >
-          <CheckCircle2 size={18} /> Erledigt
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onCompleteAt(); }}
-          title="Mit Datum erledigen"
-          style={{ border: "1px solid #e5e4dd", background: "none", color: "#5a5a52", borderRadius: "12px", width: "44px", height: "44px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
-        >
-          <Clock size={17} />
-        </button>
-        {isAdmin && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer", padding: "4px", flexShrink: 0 }}
-          >
-            <Trash2 size={15} />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function BoardView({ members, pointsByMember, allowanceProgress, rewards, isAdmin, onRedeem, onAddReward, onDeleteReward, onPayout }) {
+function BoardView({ members, pointsByMember, allowanceProgress, rewards, isAdmin, currentUserId, onRedeem, onAddReward, onDeleteReward, onPayout }) {
   const { current, overall } = pointsByMember;
   const ranked = [...members].sort((a, b) => (current[b.id] || 0) - (current[a.id] || 0));
+  const allowanceMembers = members
+    .filter((m) => m.allowance?.enabled)
+    .filter((m) => isAdmin || m.id === currentUserId);
   return (
     <div>
       {ranked.map((m, i) => (
@@ -1083,20 +1036,15 @@ function BoardView({ members, pointsByMember, allowanceProgress, rewards, isAdmi
         </div>
       ))}
 
-      <div style={{ fontSize: "12px", color: "#a0a09a", margin: "18px 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
-        <Wallet size={13} /> Sackgeld
-      </div>
-      {members.filter((m) => m.allowance?.enabled).length === 0 && (
-        <p style={{ color: "#c6c5bc", fontSize: "13px", textAlign: "center", marginBottom: "6px" }}>
-          Noch für niemanden eingerichtet.
-        </p>
-      )}
-      {members
-        .filter((m) => m.allowance?.enabled)
-        .map((m) => {
-          const pts = allowanceProgress[m.id] || 0;
-          const need = m.allowance.requiredPoints;
-          const percent = Math.min(100, Math.round((pts / need) * 100));
+      {allowanceMembers.length > 0 && (
+        <>
+          <div style={{ fontSize: "12px", color: "#a0a09a", margin: "18px 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
+            <Wallet size={13} /> Sackgeld
+          </div>
+          {allowanceMembers.map((m) => {
+            const pts = allowanceProgress[m.id] || 0;
+            const need = m.allowance.requiredPoints;
+            const percent = Math.min(100, Math.round((pts / need) * 100));
           const reached = pts >= need;
           return (
             <div key={m.id} style={{ background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
@@ -1125,6 +1073,8 @@ function BoardView({ members, pointsByMember, allowanceProgress, rewards, isAdmi
             </div>
           );
         })}
+        </>
+      )}
 
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "18px 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
         <Gift size={13} /> Belohnungen
