@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock } from "lucide-react";
+import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet } from "lucide-react";
 
 const MEMBER_COLORS = [
   { bg: "#2F4538", text: "#FFFFFF" },
@@ -113,6 +113,7 @@ export default function HouseholdApp() {
   const [showAddZone, setShowAddZone] = useState(false);
   const [showAddReward, setShowAddReward] = useState(false);
   const [pinTargetMember, setPinTargetMember] = useState(null);
+  const [allowanceTargetMember, setAllowanceTargetMember] = useState(null);
   const [completeAtTask, setCompleteAtTask] = useState(null);
   const [historyTask, setHistoryTask] = useState(null);
 
@@ -188,11 +189,39 @@ export default function HouseholdApp() {
     return { current, overall };
   }, [members, log, statsResetAt]);
 
+  const allowanceProgress = useMemo(() => {
+    const map = {};
+    members.forEach((m) => {
+      if (!m.allowance?.enabled) return;
+      const since = m.allowancePaidAt || 0;
+      const earned = log
+        .filter((e) => e.memberId === m.id && e.type === "complete" && e.timestamp >= since)
+        .reduce((sum, e) => sum + e.points, 0);
+      map[m.id] = Math.max(0, earned);
+    });
+    return map;
+  }, [members, log]);
+
   function resetStats() {
     persist("statsResetAt", Date.now(), setStatsResetAt);
   }
   function setMemberRole(id, role) {
     persist("members", members.map((m) => (m.id === id ? { ...m, role } : m)), setMembers);
+  }
+  function payoutAllowance(member) {
+    const now = Date.now();
+    persist("members", members.map((m) => (m.id === member.id ? { ...m, allowancePaidAt: now } : m)), setMembers);
+    const entry = {
+      id: uid(),
+      type: "payout",
+      taskId: null,
+      taskName: `Sackgeld ausgezahlt (CHF ${member.allowance.amount.toFixed(2).replace(/\.00$/, "")})`,
+      memberId: member.id,
+      memberName: member.name,
+      points: 0,
+      timestamp: now,
+    };
+    persist("log", [entry, ...log], setLog);
   }
 
   function addTask({ name, zoneId, frequencyDays, points, assignedTo }) {
@@ -227,6 +256,10 @@ export default function HouseholdApp() {
   function setMemberPin(id, pin) {
     persist("members", members.map((m) => (m.id === id ? { ...m, pin: pin || null } : m)), setMembers);
     setPinTargetMember(null);
+  }
+  function setMemberAllowance(id, allowance) {
+    persist("members", members.map((m) => (m.id === id ? { ...m, allowance } : m)), setMembers);
+    setAllowanceTargetMember(null);
   }
   function addReward({ name, cost }) {
     const next = [...rewards, { id: uid(), name, cost }];
@@ -378,11 +411,13 @@ export default function HouseholdApp() {
           <BoardView
             members={members}
             pointsByMember={pointsByMember}
+            allowanceProgress={allowanceProgress}
             rewards={rewards}
             isAdmin={isAdmin}
             onRedeem={redeemReward}
             onAddReward={() => setShowAddReward(true)}
             onDeleteReward={deleteReward}
+            onPayout={payoutAllowance}
           />
         )}
         {tab === "history" && <HistoryView log={log} />}
@@ -398,6 +433,7 @@ export default function HouseholdApp() {
             onAddZone={() => setShowAddZone(true)}
             onDeleteZone={deleteZone}
             onResetStats={resetStats}
+            onSetAllowance={(m) => setAllowanceTargetMember(m)}
           />
         )}
       </div>
@@ -429,6 +465,13 @@ export default function HouseholdApp() {
           member={pinTargetMember}
           onClose={() => setPinTargetMember(null)}
           onSave={(pin) => setMemberPin(pinTargetMember.id, pin)}
+        />
+      )}
+      {allowanceTargetMember && (
+        <AllowanceModal
+          member={allowanceTargetMember}
+          onClose={() => setAllowanceTargetMember(null)}
+          onSave={(allowance) => setMemberAllowance(allowanceTargetMember.id, allowance)}
         />
       )}
       {completeAtTask && (
@@ -630,11 +673,24 @@ const ZONE_CARD_COLORS = ["#3E5C76", "#4B6B43", "#8A6D3B", "#6B4E71", "#2F4538",
 
 function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone, onOpenHistory }) {
   const [openZoneId, setOpenZoneId] = useState(null);
+  const [viewMode, setViewMode] = useState("grid");
 
   const visibleTasks = useMemo(() => {
     if (isAdmin) return tasks;
     return tasks.filter((t) => !t.assignedTo || t.assignedTo === currentUserId);
   }, [tasks, isAdmin, currentUserId]);
+
+  const zoneNameById = useMemo(() => {
+    const map = {};
+    zones.forEach((z) => (map[z.id] = z.name));
+    return map;
+  }, [zones]);
+
+  const flatSorted = useMemo(() => {
+    return visibleTasks
+      .map((t) => ({ task: t, dirt: getDirtiness(t, log) }))
+      .sort((a, b) => b.dirt.ratio - a.dirt.ratio);
+  }, [visibleTasks, log]);
 
   const grouped = useMemo(() => {
     const byZone = {};
@@ -722,16 +778,52 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
 
   return (
     <div>
-      {isAdmin && (
-        <div style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
-          <button onClick={onAddTask} style={dashedBtnStyle}>
-            <Plus size={16} /> Aufgabe
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+        {isAdmin && (
+          <>
+            <button onClick={onAddTask} style={dashedBtnStyle}>
+              <Plus size={16} /> Aufgabe
+            </button>
+            <button onClick={onAddZone} style={dashedBtnStyle}>
+              <Plus size={16} /> Bereich
+            </button>
+          </>
+        )}
+        <div style={{ display: "flex", background: "#EDECE4", borderRadius: "10px", padding: "3px", flexShrink: 0 }}>
+          <button
+            onClick={() => setViewMode("grid")}
+            title="Kacheln"
+            style={{
+              border: "none",
+              borderRadius: "7px",
+              padding: "6px 9px",
+              cursor: "pointer",
+              background: viewMode === "grid" ? "#fff" : "transparent",
+              color: viewMode === "grid" ? "#2F4538" : "#a0a09a",
+              display: "flex",
+              boxShadow: viewMode === "grid" ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+            }}
+          >
+            <LayoutGrid size={15} />
           </button>
-          <button onClick={onAddZone} style={dashedBtnStyle}>
-            <Plus size={16} /> Bereich
+          <button
+            onClick={() => setViewMode("list")}
+            title="Liste"
+            style={{
+              border: "none",
+              borderRadius: "7px",
+              padding: "6px 9px",
+              cursor: "pointer",
+              background: viewMode === "list" ? "#fff" : "transparent",
+              color: viewMode === "list" ? "#2F4538" : "#a0a09a",
+              display: "flex",
+              boxShadow: viewMode === "list" ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+            }}
+          >
+            <ListIcon size={15} />
           </button>
         </div>
-      )}
+      </div>
 
       {grouped.length === 0 && (
         <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>
@@ -739,53 +831,72 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
         </p>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-        {grouped.map((g) => {
-          const dotColor = g.avgRatio >= 1 ? OVERDUE_COLOR : g.avgRatio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
-          const overdueCount = g.items.filter((x) => x.dirt.overdueDays > 0).length;
-          return (
-            <button
-              key={g.zone.id}
-              onClick={() => setOpenZoneId(g.zone.id)}
-              style={{
-                position: "relative",
-                textAlign: "left",
-                border: "none",
-                borderRadius: "14px",
-                background: g.cardColor,
-                color: "#fff",
-                padding: "14px",
-                minHeight: "96px",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-                cursor: "pointer",
-              }}
-            >
-              <div
+      {viewMode === "grid" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          {grouped.map((g) => {
+            const dotColor = g.avgRatio >= 1 ? OVERDUE_COLOR : g.avgRatio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
+            const overdueCount = g.items.filter((x) => x.dirt.overdueDays > 0).length;
+            return (
+              <button
+                key={g.zone.id}
+                onClick={() => setOpenZoneId(g.zone.id)}
                 style={{
-                  position: "absolute",
-                  top: "10px",
-                  right: "10px",
-                  width: "22px",
-                  height: "22px",
-                  borderRadius: "50%",
-                  background: "rgba(255,255,255,0.9)",
+                  position: "relative",
+                  textAlign: "left",
+                  border: "none",
+                  borderRadius: "14px",
+                  background: g.cardColor,
+                  color: "#fff",
+                  padding: "14px",
+                  minHeight: "96px",
                   display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
+                  flexDirection: "column",
+                  justifyContent: "space-between",
+                  cursor: "pointer",
                 }}
               >
-                <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: dotColor }} />
-              </div>
-              <span style={{ fontSize: "14px", fontWeight: 600, paddingRight: "26px" }}>{g.zone.name}</span>
-              <span style={{ fontSize: "11.5px", opacity: 0.85 }}>
-                {overdueCount > 0 ? `${overdueCount} überfällig` : `${g.items.length} Aufgabe(n)`}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "10px",
+                    right: "10px",
+                    width: "22px",
+                    height: "22px",
+                    borderRadius: "50%",
+                    background: "rgba(255,255,255,0.9)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: dotColor }} />
+                </div>
+                <span style={{ fontSize: "14px", fontWeight: 600, paddingRight: "26px" }}>{g.zone.name}</span>
+                <span style={{ fontSize: "11.5px", opacity: 0.85 }}>
+                  {overdueCount > 0 ? `${overdueCount} überfällig` : `${g.items.length} Aufgabe(n)`}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div>
+          {flatSorted.map(({ task: t, dirt }) => (
+            <FlatTaskRow
+              key={t.id}
+              task={t}
+              dirt={dirt}
+              zoneName={t.zoneId ? zoneNameById[t.zoneId] : null}
+              assignee={t.assignedTo ? memberById(t.assignedTo) : null}
+              isAdmin={isAdmin}
+              onComplete={() => onComplete(t)}
+              onCompleteAt={() => onCompleteAt(t)}
+              onDelete={() => onDeleteTask(t.id)}
+              onOpenHistory={() => onOpenHistory(t)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -830,63 +941,130 @@ function PillBar({ ratio, color }) {
 function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory }) {
   return (
     <div
-      onClick={onOpenHistory}
       style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "10px",
         padding: "12px 2px",
         borderBottom: "1px solid rgba(255,255,255,0.18)",
-        cursor: "pointer",
       }}
     >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: "14.5px", fontWeight: 600, color: "#fff" }}>{task.name}</div>
-        <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)", marginTop: "1px" }}>
-          {task.points} Pkt.{assignee ? ` · ${assignee.name}` : ""}
+      <div onClick={onOpenHistory} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", cursor: "pointer", marginBottom: "10px" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "14.5px", fontWeight: 600, color: "#fff" }}>{task.name}</div>
+          <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)", marginTop: "1px" }}>
+            {task.points} Pkt.{assignee ? ` · ${assignee.name}` : ""}
+          </div>
+          <span style={{ fontSize: "10.5px", color: "rgba(255,255,255,0.85)", fontWeight: dirt.overdueDays > 0 ? 700 : 400 }}>
+            {dirt.overdueDays > 0
+              ? `${dirt.overdueDays} Tg. überfällig`
+              : dirt.daysUntilDue === 0
+              ? "Heute fällig"
+              : `Fällig in ${dirt.daysUntilDue} Tg.`}
+          </span>
         </div>
+        <PillBar ratio={dirt.ratio} color={dirt.color} />
       </div>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "5px", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <PillBar ratio={dirt.ratio} color={dirt.color} />
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <button
+          onClick={(e) => { e.stopPropagation(); onComplete(); }}
+          style={{
+            flex: 1,
+            border: "none",
+            background: "rgba(255,255,255,0.95)",
+            color: "#2a2a26",
+            borderRadius: "12px",
+            height: "46px",
+            fontSize: "14.5px",
+            fontWeight: 700,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "7px",
+          }}
+        >
+          <CheckCircle2 size={19} /> Erledigt
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onCompleteAt(); }}
+          title="Mit Datum erledigen"
+          style={{ border: "none", background: "rgba(255,255,255,0.2)", color: "#fff", borderRadius: "12px", width: "46px", height: "46px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+        >
+          <Clock size={17} />
+        </button>
+        {isAdmin && (
           <button
-            onClick={(e) => { e.stopPropagation(); onCompleteAt(); }}
-            title="Mit Datum erledigen"
-            style={{ border: "none", background: "rgba(255,255,255,0.2)", color: "#fff", borderRadius: "50%", width: "26px", height: "26px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            style={{ border: "none", background: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: "4px", flexShrink: 0 }}
           >
-            <Clock size={13} />
+            <Trash2 size={15} />
           </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onComplete(); }}
-            title="Erledigt"
-            style={{ border: "none", background: "rgba(255,255,255,0.9)", color: "#2a2a26", borderRadius: "50%", width: "26px", height: "26px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
-          >
-            <CheckCircle2 size={15} />
-          </button>
-          {isAdmin && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              style={{ border: "none", background: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: "2px" }}
-            >
-              <Trash2 size={13} />
-            </button>
-          )}
-        </div>
-        <span style={{ fontSize: "10.5px", color: "rgba(255,255,255,0.85)", fontWeight: dirt.overdueDays > 0 ? 700 : 400 }}>
-          {dirt.overdueDays > 0
-            ? `${dirt.overdueDays} Tg. überfällig`
-            : dirt.daysUntilDue === 0
-            ? "Heute fällig"
-            : `Fällig in ${dirt.daysUntilDue} Tg.`}
-        </span>
+        )}
       </div>
     </div>
   );
 }
 
 
-function BoardView({ members, pointsByMember, rewards, isAdmin, onRedeem, onAddReward, onDeleteReward }) {
+function FlatTaskRow({ task, dirt, zoneName, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory }) {
+  return (
+    <div style={{ background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
+      <div onClick={onOpenHistory} style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", cursor: "pointer" }}>
+        <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: dirt.color, flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{task.name}</div>
+          <div style={{ fontSize: "11.5px", color: dirt.overdueDays > 0 ? OVERDUE_COLOR : "#a0a09a", marginTop: "1px", fontWeight: dirt.overdueDays > 0 ? 600 : 400 }}>
+            {dirt.overdueDays > 0
+              ? `${dirt.overdueDays} Tag(e) überfällig`
+              : dirt.daysUntilDue === 0
+              ? "Heute fällig"
+              : `Fällig in ${dirt.daysUntilDue} Tag(en)`}
+            {zoneName ? ` · ${zoneName}` : ""}
+            {assignee ? ` · ${assignee.name}` : ""}
+          </div>
+        </div>
+      </div>
+      <DirtBar percent={Math.min(dirt.ratio, 1) * 100} color={dirt.color} />
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
+        <button
+          onClick={(e) => { e.stopPropagation(); onComplete(); }}
+          style={{
+            flex: 1,
+            border: "none",
+            background: "#2F4538",
+            color: "#fff",
+            borderRadius: "12px",
+            height: "44px",
+            fontSize: "14.5px",
+            fontWeight: 700,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "7px",
+          }}
+        >
+          <CheckCircle2 size={18} /> Erledigt
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onCompleteAt(); }}
+          title="Mit Datum erledigen"
+          style={{ border: "1px solid #e5e4dd", background: "none", color: "#5a5a52", borderRadius: "12px", width: "44px", height: "44px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+        >
+          <Clock size={17} />
+        </button>
+        {isAdmin && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer", padding: "4px", flexShrink: 0 }}
+          >
+            <Trash2 size={15} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BoardView({ members, pointsByMember, allowanceProgress, rewards, isAdmin, onRedeem, onAddReward, onDeleteReward, onPayout }) {
   const { current, overall } = pointsByMember;
   const ranked = [...members].sort((a, b) => (current[b.id] || 0) - (current[a.id] || 0));
   return (
@@ -904,6 +1082,49 @@ function BoardView({ members, pointsByMember, rewards, isAdmin, onRedeem, onAddR
           <div style={{ fontSize: "15px", fontWeight: 600, color: "#E0A72E" }}>{current[m.id] || 0} Pkt.</div>
         </div>
       ))}
+
+      <div style={{ fontSize: "12px", color: "#a0a09a", margin: "18px 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
+        <Wallet size={13} /> Sackgeld
+      </div>
+      {members.filter((m) => m.allowance?.enabled).length === 0 && (
+        <p style={{ color: "#c6c5bc", fontSize: "13px", textAlign: "center", marginBottom: "6px" }}>
+          Noch für niemanden eingerichtet.
+        </p>
+      )}
+      {members
+        .filter((m) => m.allowance?.enabled)
+        .map((m) => {
+          const pts = allowanceProgress[m.id] || 0;
+          const need = m.allowance.requiredPoints;
+          const percent = Math.min(100, Math.round((pts / need) * 100));
+          const reached = pts >= need;
+          return (
+            <div key={m.id} style={{ background: "#fff", borderRadius: "12px", padding: "10px 12px", marginBottom: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                <span style={{ fontSize: "14px", fontWeight: 500, color: "#2a2a26" }}>{m.name}</span>
+                <span style={{ fontSize: "12.5px", fontWeight: 600, color: reached ? CLEAN_COLOR : "#5a5a52" }}>
+                  CHF {m.allowance.amount.toFixed(2).replace(/\.00$/, "")} / {m.allowance.frequency === "weekly" ? "Woche" : "Monat"}
+                </span>
+              </div>
+              <DirtBar percent={percent} color={reached ? CLEAN_COLOR : "#E0A72E"} />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "5px" }}>
+                <span style={{ fontSize: "11.5px", color: "#a0a09a" }}>
+                  {reached
+                    ? `Ziel erreicht (${pts}/${need} Pkt.)`
+                    : `${pts} von ${need} Punkten – noch ${need - pts} nötig`}
+                </span>
+                {isAdmin && (
+                  <button
+                    onClick={() => onPayout(m)}
+                    style={{ border: "1px solid #ddd", background: "none", color: "#5a5a52", borderRadius: "8px", padding: "3px 8px", fontSize: "11px", cursor: "pointer", flexShrink: 0, marginLeft: "8px" }}
+                  >
+                    Ausgezahlt
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
 
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "18px 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
         <Gift size={13} /> Belohnungen
@@ -945,22 +1166,24 @@ function HistoryView({ log }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: "13.5px", color: "#2a2a26" }}>
               <strong style={{ fontWeight: 600 }}>{e.memberName}</strong>{" "}
-              {e.type === "complete" ? "hat erledigt:" : "hat eingelöst:"} {e.taskName}
+              {e.type === "complete" ? "hat erledigt:" : e.type === "payout" ? "" : "hat eingelöst:"} {e.taskName}
             </div>
             <div style={{ fontSize: "11.5px", color: "#a0a09a", marginTop: "1px" }}>
               {new Date(e.timestamp).toLocaleString("de-CH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
             </div>
           </div>
-          <div style={{ fontSize: "13px", fontWeight: 600, color: e.points >= 0 ? "#4B6B43" : "#8A4B3B" }}>
-            {e.points >= 0 ? "+" : ""}{e.points}
-          </div>
+          {e.type !== "payout" && (
+            <div style={{ fontSize: "13px", fontWeight: 600, color: e.points >= 0 ? "#4B6B43" : "#8A4B3B" }}>
+              {e.points >= 0 ? "+" : ""}{e.points}
+            </div>
+          )}
         </div>
       ))}
     </div>
   );
 }
 
-function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats }) {
+function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats, onSetAllowance }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
 
   return (
@@ -989,6 +1212,9 @@ function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMemb
           )}
           <button onClick={() => onSetPin(m)} style={{ border: "none", background: "none", color: m.pin ? "#2F4538" : "#c6c5bc", cursor: "pointer", display: "flex", alignItems: "center", padding: "4px" }} title="Code setzen">
             <Lock size={14} />
+          </button>
+          <button onClick={() => onSetAllowance(m)} style={{ border: "none", background: "none", color: m.allowance?.enabled ? "#2F4538" : "#c6c5bc", cursor: "pointer", display: "flex", alignItems: "center", padding: "4px" }} title="Sackgeld einstellen">
+            <Wallet size={14} />
           </button>
           {m.role !== "admin" && (
             <button onClick={() => onDeleteMember(m.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
@@ -1123,10 +1349,18 @@ function SimpleInputModal({ title, placeholder, onClose, onSave }) {
 function AddTaskModal({ zones, members, onClose, onSave }) {
   const [name, setName] = useState("");
   const [zoneId, setZoneId] = useState(zones[0]?.id || "");
-  const [frequencyDays, setFrequencyDays] = useState(7);
-  const [points, setPoints] = useState(5);
+  const [frequencyDays, setFrequencyDays] = useState("7");
+  const [points, setPoints] = useState("5");
   const [assignedTo, setAssignedTo] = useState("");
   const [error, setError] = useState("");
+
+  function numChange(setter) {
+    return (e) => {
+      setter(e.target.value.replace(/[^0-9]/g, ""));
+      setError("");
+    };
+  }
+
   return (
     <ModalShell title="Neue Aufgabe" onClose={onClose}>
       <input style={inputStyle} placeholder="z.B. Boden wischen" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} />
@@ -1138,9 +1372,9 @@ function AddTaskModal({ zones, members, onClose, onSave }) {
         ))}
       </select>
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Alle wie viele Tage fällig?</label>
-      <input style={inputStyle} type="number" min="1" step="1" value={frequencyDays} onChange={(e) => setFrequencyDays(Math.max(1, Math.round(Number(e.target.value) || 1)))} />
+      <input style={inputStyle} type="text" inputMode="numeric" placeholder="7" value={frequencyDays} onChange={numChange(setFrequencyDays)} />
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Punkte</label>
-      <input style={inputStyle} type="number" min="1" step="1" value={points} onChange={(e) => setPoints(Math.max(1, Math.round(Number(e.target.value) || 1)))} />
+      <input style={inputStyle} type="text" inputMode="numeric" placeholder="5" value={points} onChange={numChange(setPoints)} />
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Zuständig (optional)</label>
       <select style={inputStyle} value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
         <option value="">Egal wer</option>
@@ -1153,7 +1387,9 @@ function AddTaskModal({ zones, members, onClose, onSave }) {
         style={primaryBtn}
         onClick={() => {
           if (!name.trim()) return setError("Bitte einen Namen eingeben.");
-          onSave({ name: name.trim(), zoneId, frequencyDays, points, assignedTo });
+          const freq = Math.max(1, parseInt(frequencyDays, 10) || 1);
+          const pts = Math.max(1, parseInt(points, 10) || 1);
+          onSave({ name: name.trim(), zoneId, frequencyDays: freq, points: pts, assignedTo });
         }}
       >
         Aufgabe speichern
@@ -1164,19 +1400,27 @@ function AddTaskModal({ zones, members, onClose, onSave }) {
 
 function AddRewardModal({ onClose, onSave }) {
   const [name, setName] = useState("");
-  const [cost, setCost] = useState(20);
+  const [cost, setCost] = useState("20");
   const [error, setError] = useState("");
   return (
     <ModalShell title="Neue Belohnung" onClose={onClose}>
       <input style={inputStyle} placeholder="z.B. Filmabend aussuchen" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} />
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Kosten in Punkten</label>
-      <input style={inputStyle} type="number" min="1" step="1" value={cost} onChange={(e) => setCost(Math.max(1, Math.round(Number(e.target.value) || 1)))} />
+      <input
+        style={inputStyle}
+        type="text"
+        inputMode="numeric"
+        placeholder="20"
+        value={cost}
+        onChange={(e) => { setCost(e.target.value.replace(/[^0-9]/g, "")); setError(""); }}
+      />
       {error && <div style={{ color: "#8A4B3B", fontSize: "12px", marginBottom: "8px" }}>{error}</div>}
       <button
         style={primaryBtn}
         onClick={() => {
           if (!name.trim()) return setError("Bitte einen Namen eingeben.");
-          onSave({ name: name.trim(), cost });
+          const c = Math.max(1, parseInt(cost, 10) || 1);
+          onSave({ name: name.trim(), cost: c });
         }}
       >
         Belohnung speichern
@@ -1311,6 +1555,65 @@ function PinSetModal({ member, onClose, onSave }) {
           onClick={() => onSave(null)}
         >
           Code entfernen
+        </button>
+      )}
+    </ModalShell>
+  );
+}
+
+function AllowanceModal({ member, onClose, onSave }) {
+  const existing = member.allowance || {};
+  const [amount, setAmount] = useState(existing.amount ? String(existing.amount) : "10");
+  const [frequency, setFrequency] = useState(existing.frequency || "weekly");
+  const [requiredPoints, setRequiredPoints] = useState(existing.requiredPoints ? String(existing.requiredPoints) : "20");
+  const [error, setError] = useState("");
+
+  return (
+    <ModalShell title={`Sackgeld für ${member.name}`} onClose={onClose}>
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Betrag in CHF</label>
+      <input
+        style={inputStyle}
+        type="text"
+        inputMode="decimal"
+        placeholder="10"
+        value={amount}
+        onChange={(e) => { setAmount(e.target.value.replace(/[^0-9.,]/g, "")); setError(""); }}
+      />
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Häufigkeit</label>
+      <select style={inputStyle} value={frequency} onChange={(e) => setFrequency(e.target.value)}>
+        <option value="weekly">Wöchentlich</option>
+        <option value="monthly">Monatlich</option>
+      </select>
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Dafür benötigte Punkte</label>
+      <input
+        style={inputStyle}
+        type="text"
+        inputMode="numeric"
+        placeholder="20"
+        value={requiredPoints}
+        onChange={(e) => { setRequiredPoints(e.target.value.replace(/[^0-9]/g, "")); setError(""); }}
+      />
+      <p style={{ fontSize: "11.5px", color: "#c6c5bc", margin: "0 0 10px", lineHeight: 1.4 }}>
+        Der Fortschritt zählt ab der letzten Auszahlung dieser Person (Button "Ausgezahlt" auf der Punkte-Seite) – unabhängig von der allgemeinen Statistik und den anderen Kindern.
+      </p>
+      {error && <div style={{ color: "#8A4B3B", fontSize: "12px", marginBottom: "8px" }}>{error}</div>}
+      <button
+        style={primaryBtn}
+        onClick={() => {
+          const amt = parseFloat(amount.replace(",", ".")) || 0;
+          const pts = Math.max(1, parseInt(requiredPoints, 10) || 1);
+          if (amt <= 0) return setError("Bitte einen Betrag grösser 0 eingeben.");
+          onSave({ enabled: true, amount: amt, frequency, requiredPoints: pts });
+        }}
+      >
+        Speichern
+      </button>
+      {member.allowance?.enabled && (
+        <button
+          style={{ ...primaryBtn, background: "none", color: "#8A4B3B", marginTop: "8px", border: "1px solid #f0d9d3" }}
+          onClick={() => onSave({ enabled: false, amount: existing.amount, frequency, requiredPoints: existing.requiredPoints })}
+        >
+          Sackgeld deaktivieren
         </button>
       )}
     </ModalShell>
