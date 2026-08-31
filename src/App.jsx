@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet } from "lucide-react";
 
 const MEMBER_COLORS = [
@@ -129,43 +129,66 @@ export default function HouseholdApp() {
     () => localStorage.getItem(INSTALL_DISMISSED_KEY) === "1"
   );
 
-  useEffect(() => {
-    (async () => {
-      const data = await loadAllShared();
-      let loadedMembers = data.members || [];
-      let loadedZones = data.zones || [];
+  const isFirstLoadRef = useRef(true);
 
-      if (loadedMembers.length === 0) {
-        loadedMembers = DEFAULT_MEMBERS.map((m, i) => ({
-          id: uid(),
-          name: m.name,
-          role: m.role,
-          color: MEMBER_COLORS[i % MEMBER_COLORS.length],
-          pin: null,
-        }));
-        saveShared("members", loadedMembers);
-      }
-      if (loadedZones.length === 0) {
-        loadedZones = DEFAULT_ZONES.map((name) => ({ id: uid(), name }));
-        saveShared("zones", loadedZones);
-      }
+  const loadData = useCallback(async () => {
+    const data = await loadAllShared();
+    let loadedMembers = data.members || [];
+    let loadedZones = data.zones || [];
 
-      setMembers(loadedMembers);
-      setZones(loadedZones);
-      setTasks(data.tasks || []);
-      setRewards(data.rewards || []);
-      setLog(data.log || []);
-      setStatsResetAt(data.statsResetAt || 0);
-      setOverallResetAt(data.overallResetAt || 0);
+    if (loadedMembers.length === 0) {
+      loadedMembers = DEFAULT_MEMBERS.map((m, i) => ({
+        id: uid(),
+        name: m.name,
+        role: m.role,
+        color: MEMBER_COLORS[i % MEMBER_COLORS.length],
+        pin: null,
+      }));
+      saveShared("members", loadedMembers);
+    }
+    if (loadedZones.length === 0) {
+      loadedZones = DEFAULT_ZONES.map((name) => ({ id: uid(), name }));
+      saveShared("zones", loadedZones);
+    }
 
+    setMembers(loadedMembers);
+    setZones(loadedZones);
+    setTasks(data.tasks || []);
+    setRewards(data.rewards || []);
+    setLog(data.log || []);
+    setStatsResetAt(data.statsResetAt || 0);
+    setOverallResetAt(data.overallResetAt || 0);
+
+    if (isFirstLoadRef.current) {
       const savedUserId = localStorage.getItem(LOGIN_KEY);
       if (savedUserId && loadedMembers.some((m) => m.id === savedUserId)) {
         setCurrentUser(savedUserId);
       }
-
       setReady(true);
-    })();
+      isFirstLoadRef.current = false;
+    }
   }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Re-fetch shared data whenever the app is opened or regains focus, so
+  // everyone always sees the latest tasks/points without a manual reload.
+  useEffect(() => {
+    function onFocus() {
+      loadData();
+    }
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") loadData();
+    }
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [loadData]);
 
   useEffect(() => {
     function onBeforeInstall(e) {
