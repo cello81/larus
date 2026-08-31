@@ -27,6 +27,11 @@ const OVERDUE_COLOR = "#8A4B3B";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const DAY_MS = 86400000;
 
+function isSameDay(a, b) {
+  const da = new Date(a), db = new Date(b);
+  return da.toDateString() === db.toDateString();
+}
+
 const API_URL = "api/data.php";
 const LOGIN_KEY = "larus_user_id";
 const INSTALL_DISMISSED_KEY = "larus_install_dismissed";
@@ -104,6 +109,8 @@ export default function HouseholdApp() {
   const [rewards, setRewards] = useState([]);
   const [log, setLog] = useState([]);
   const [statsResetAt, setStatsResetAt] = useState(0);
+  const [overallResetAt, setOverallResetAt] = useState(0);
+  const [toast, setToast] = useState(null);
   const [tab, setTab] = useState("tasks");
   const [currentUser, setCurrentUser] = useState(null);
   const [pendingPinMember, setPendingPinMember] = useState(null);
@@ -149,6 +156,7 @@ export default function HouseholdApp() {
       setRewards(data.rewards || []);
       setLog(data.log || []);
       setStatsResetAt(data.statsResetAt || 0);
+      setOverallResetAt(data.overallResetAt || 0);
 
       const savedUserId = localStorage.getItem(LOGIN_KEY);
       if (savedUserId && loadedMembers.some((m) => m.id === savedUserId)) {
@@ -181,13 +189,15 @@ export default function HouseholdApp() {
       overall[m.id] = 0;
     });
     log.forEach((entry) => {
-      overall[entry.memberId] = (overall[entry.memberId] || 0) + entry.points;
+      if (entry.timestamp >= overallResetAt) {
+        overall[entry.memberId] = (overall[entry.memberId] || 0) + entry.points;
+      }
       if (entry.timestamp >= statsResetAt) {
         current[entry.memberId] = (current[entry.memberId] || 0) + entry.points;
       }
     });
     return { current, overall };
-  }, [members, log, statsResetAt]);
+  }, [members, log, statsResetAt, overallResetAt]);
 
   const allowanceProgress = useMemo(() => {
     const map = {};
@@ -204,6 +214,12 @@ export default function HouseholdApp() {
 
   function resetStats() {
     persist("statsResetAt", Date.now(), setStatsResetAt);
+  }
+  function masterReset() {
+    const now = Date.now();
+    persist("statsResetAt", now, setStatsResetAt);
+    persist("overallResetAt", now, setOverallResetAt);
+    persist("members", members.map((m) => ({ ...m, allowancePaidAt: now })), setMembers);
   }
   function setMemberRole(id, role) {
     persist("members", members.map((m) => (m.id === id ? { ...m, role } : m)), setMembers);
@@ -273,6 +289,12 @@ export default function HouseholdApp() {
   function completeTask(task, timestamp) {
     const member = members.find((m) => m.id === currentUser);
     if (!member) return;
+    const ts = timestamp || Date.now();
+    const alreadyDone = log.some((e) => e.taskId === task.id && e.type === "complete" && isSameDay(e.timestamp, ts));
+    if (alreadyDone) {
+      showToast(`"${task.name}" wurde für diesen Tag bereits als erledigt markiert.`);
+      return;
+    }
     const entry = {
       id: uid(),
       type: "complete",
@@ -281,9 +303,14 @@ export default function HouseholdApp() {
       memberId: member.id,
       memberName: member.name,
       points: task.points,
-      timestamp: timestamp || Date.now(),
+      timestamp: ts,
     };
     persist("log", [entry, ...log], setLog);
+  }
+
+  function showToast(message) {
+    setToast(message);
+    setTimeout(() => setToast(null), 3000);
   }
 
   function redeemReward(reward) {
@@ -363,6 +390,26 @@ export default function HouseholdApp() {
 
   return (
     <div className="app-shell">
+      {toast && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(env(safe-area-inset-top, 0) + 10px)",
+            left: "12px",
+            right: "12px",
+            zIndex: 50,
+            background: "#2a2a26",
+            color: "#fff",
+            fontSize: "13px",
+            padding: "10px 14px",
+            borderRadius: "10px",
+            boxShadow: "0 6px 16px rgba(0,0,0,0.25)",
+            textAlign: "center",
+          }}
+        >
+          {toast}
+        </div>
+      )}
       {/* Header */}
       <div style={{ background: "#2F4538", color: "#fff", padding: "1.1rem 1.25rem 1rem", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div>
@@ -434,6 +481,7 @@ export default function HouseholdApp() {
             onAddZone={() => setShowAddZone(true)}
             onDeleteZone={deleteZone}
             onResetStats={resetStats}
+            onMasterReset={masterReset}
             onSetAllowance={(m) => setAllowanceTargetMember(m)}
           />
         )}
@@ -1133,8 +1181,9 @@ function HistoryView({ log }) {
   );
 }
 
-function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats, onSetAllowance }) {
+function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats, onMasterReset, onSetAllowance }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [confirmingMasterReset, setConfirmingMasterReset] = useState(false);
 
   return (
     <div>
@@ -1220,6 +1269,40 @@ function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMemb
               </button>
               <button
                 onClick={() => setConfirmingReset(false)}
+                style={{ flex: 1, border: "1px solid #ddd", background: "none", color: "#5a5a52", borderRadius: "10px", padding: "9px", fontSize: "13px", cursor: "pointer" }}
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "12px", marginTop: "10px", border: "1px solid #f0d9d3" }}>
+        <p style={{ fontSize: "12.5px", color: "#5a5a52", margin: "0 0 10px", lineHeight: 1.5 }}>
+          <strong style={{ color: "#8A4B3B" }}>Master-Reset:</strong> setzt wirklich <em>alle</em> Statistiken zurück – aktuelle Rangliste, Gesamt-Punkte pro Person und den Sackgeld-Fortschritt aller Kinder. Der Verlauf (Wer hat wann was erledigt) und die Aufgaben-Fälligkeiten bleiben erhalten.
+        </p>
+        {!confirmingMasterReset ? (
+          <button
+            onClick={() => setConfirmingMasterReset(true)}
+            style={{ border: "none", background: "#8A4B3B", color: "#fff", borderRadius: "10px", padding: "9px", fontSize: "13px", fontWeight: 600, cursor: "pointer", width: "100%" }}
+          >
+            Master-Reset
+          </button>
+        ) : (
+          <div>
+            <p style={{ fontSize: "12.5px", color: "#8A4B3B", fontWeight: 600, margin: "0 0 8px" }}>
+              Wirklich alles zurücksetzen? Das betrifft alle Personen und lässt sich nicht rückgängig machen.
+            </p>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                onClick={() => { onMasterReset(); setConfirmingMasterReset(false); }}
+                style={{ flex: 1, border: "none", background: "#8A4B3B", color: "#fff", borderRadius: "10px", padding: "9px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}
+              >
+                Ja, alles zurücksetzen
+              </button>
+              <button
+                onClick={() => setConfirmingMasterReset(false)}
                 style={{ flex: 1, border: "1px solid #ddd", background: "none", color: "#5a5a52", borderRadius: "10px", padding: "9px", fontSize: "13px", cursor: "pointer" }}
               >
                 Abbrechen
