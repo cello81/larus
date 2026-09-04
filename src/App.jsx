@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet } from "lucide-react";
+import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet, AlertTriangle } from "lucide-react";
 
 const MEMBER_COLORS = [
   { bg: "#2F4538", text: "#FFFFFF" },
@@ -23,6 +23,7 @@ const DEFAULT_ZONES = ["Küche", "Bad", "Wohnzimmer", "Schlafzimmer"];
 const CLEAN_COLOR = "#4B6B43";
 const WARN_COLOR = "#E0A72E";
 const OVERDUE_COLOR = "#8A4B3B";
+const OVERDUE_ALERT_COLOR = "#E8573F";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const DAY_MS = 86400000;
@@ -99,6 +100,13 @@ function getDirtiness(task, log) {
     overdueDays: ratio > 1 ? Math.round(days - freq) : 0,
     daysUntilDue: ratio <= 1 ? Math.max(0, Math.round(freq - days)) : 0,
   };
+}
+
+// Sort key based on real calendar days, not the frequency-normalized ratio:
+// overdue tasks always outrank not-yet-due ones, most overdue first; among
+// not-yet-due tasks, the one due soonest ranks highest.
+function urgencyValue(dirt) {
+  return dirt.overdueDays > 0 ? 100000 + dirt.overdueDays : -dirt.daysUntilDue;
 }
 
 export default function HouseholdApp() {
@@ -768,7 +776,7 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
   const flatSorted = useMemo(() => {
     return visibleTasks
       .map((t) => ({ task: t, dirt: getDirtiness(t, log) }))
-      .sort((a, b) => b.dirt.ratio - a.dirt.ratio);
+      .sort((a, b) => urgencyValue(b.dirt) - urgencyValue(a.dirt));
   }, [visibleTasks, log]);
 
   const grouped = useMemo(() => {
@@ -783,16 +791,17 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
     function buildGroup(zone, taskList, colorIndex) {
       const items = taskList
         .map((t) => ({ task: t, dirt: getDirtiness(t, log) }))
-        .sort((a, b) => b.dirt.ratio - a.dirt.ratio);
+        .sort((a, b) => urgencyValue(b.dirt) - urgencyValue(a.dirt));
       const avgRatio = items.length === 0 ? 0 : items.reduce((sum, x) => sum + x.dirt.ratio, 0) / items.length;
-      return { zone, items, avgRatio, cardColor: ZONE_CARD_COLORS[colorIndex % ZONE_CARD_COLORS.length] };
+      const maxUrgency = items.length === 0 ? -Infinity : Math.max(...items.map((x) => urgencyValue(x.dirt)));
+      return { zone, items, avgRatio, maxUrgency, cardColor: ZONE_CARD_COLORS[colorIndex % ZONE_CARD_COLORS.length] };
     }
 
     const groups = zones.map((z, i) => buildGroup(z, byZone[z.id], i));
     if (byZone.__none.length > 0) {
       groups.push(buildGroup({ id: "__none", name: "Sonstiges" }, byZone.__none, zones.length));
     }
-    return groups.filter((g) => g.items.length > 0).sort((a, b) => b.avgRatio - a.avgRatio);
+    return groups.filter((g) => g.items.length > 0).sort((a, b) => b.maxUrgency - a.maxUrgency);
   }, [visibleTasks, zones, log]);
 
   const openGroup = grouped.find((g) => g.zone.id === openZoneId);
@@ -1020,27 +1029,53 @@ function PillBar({ ratio, color }) {
 }
 
 function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory, zoneName, color, asCard }) {
+  const overdue = dirt.overdueDays > 0;
   return (
     <div
       style={
         asCard
-          ? { background: color, borderRadius: "14px", padding: "12px", marginBottom: "10px" }
-          : { padding: "12px 2px", borderBottom: "1px solid rgba(255,255,255,0.18)" }
+          ? {
+              background: color,
+              borderRadius: "14px",
+              padding: "12px",
+              marginBottom: "10px",
+              boxShadow: overdue ? `0 0 0 2px ${OVERDUE_ALERT_COLOR}` : "none",
+            }
+          : {
+              padding: "12px 2px",
+              borderBottom: "1px solid rgba(255,255,255,0.18)",
+              borderLeft: overdue ? `3px solid ${OVERDUE_ALERT_COLOR}` : "3px solid transparent",
+              paddingLeft: "8px",
+            }
       }
     >
       <div onClick={onOpenHistory} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", cursor: "pointer", marginBottom: "10px" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "14.5px", fontWeight: 600, color: "#fff" }}>{task.name}</div>
-          <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)", marginTop: "1px" }}>
+          <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)", marginTop: "1px", marginBottom: "3px" }}>
             {task.points} Pkt.{zoneName ? ` · ${zoneName}` : ""}{assignee ? ` · ${assignee.name}` : ""}
           </div>
-          <span style={{ fontSize: "10.5px", color: "rgba(255,255,255,0.85)", fontWeight: dirt.overdueDays > 0 ? 700 : 400 }}>
-            {dirt.overdueDays > 0
-              ? `${dirt.overdueDays} Tg. überfällig`
-              : dirt.daysUntilDue === 0
-              ? "Heute fällig"
-              : `Fällig in ${dirt.daysUntilDue} Tg.`}
-          </span>
+          {overdue ? (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+                background: OVERDUE_ALERT_COLOR,
+                color: "#fff",
+                fontWeight: 700,
+                padding: "2px 8px",
+                borderRadius: "999px",
+                fontSize: "10.5px",
+              }}
+            >
+              <AlertTriangle size={11} /> {dirt.overdueDays} Tg. überfällig
+            </span>
+          ) : (
+            <span style={{ fontSize: "10.5px", color: "rgba(255,255,255,0.85)" }}>
+              {dirt.daysUntilDue === 0 ? "Heute fällig" : `Fällig in ${dirt.daysUntilDue} Tg.`}
+            </span>
+          )}
         </div>
         <PillBar ratio={dirt.ratio} color={dirt.color} />
       </div>
