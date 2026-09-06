@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet, AlertTriangle } from "lucide-react";
+import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet, AlertTriangle, Pencil, Sparkles, ArrowUpDown } from "lucide-react";
 
 const MEMBER_COLORS = [
   { bg: "#2F4538", text: "#FFFFFF" },
@@ -131,6 +131,7 @@ export default function HouseholdApp() {
   const [allowanceTargetMember, setAllowanceTargetMember] = useState(null);
   const [completeAtTask, setCompleteAtTask] = useState(null);
   const [historyTask, setHistoryTask] = useState(null);
+  const [editTaskTarget, setEditTaskTarget] = useState(null);
 
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installDismissed, setInstallDismissed] = useState(
@@ -159,9 +160,15 @@ export default function HouseholdApp() {
       saveShared("zones", loadedZones);
     }
 
+    const loadedTasks = (data.tasks || []).map((t) => ({
+      ...t,
+      type: t.type === "adhoc" ? "adhoc" : "recurring",
+      assignedTo: Array.isArray(t.assignedTo) ? t.assignedTo : t.assignedTo ? [t.assignedTo] : [],
+    }));
+
     setMembers(loadedMembers);
     setZones(loadedZones);
-    setTasks(data.tasks || []);
+    setTasks(loadedTasks);
     setRewards(data.rewards || []);
     setLog(data.log || []);
     setStatsResetAt(data.statsResetAt || 0);
@@ -271,13 +278,42 @@ export default function HouseholdApp() {
     persist("log", [entry, ...log], setLog);
   }
 
-  function addTask({ name, zoneId, frequencyDays, points, assignedTo }) {
+  function addTask({ name, zoneId, type, frequencyDays, points, assignedTo }) {
     const next = [
       ...tasks,
-      { id: uid(), name, zoneId: zoneId || null, frequencyDays, points, assignedTo: assignedTo || null, createdAt: Date.now() },
+      {
+        id: uid(),
+        name,
+        zoneId: zoneId || null,
+        type: type === "adhoc" ? "adhoc" : "recurring",
+        frequencyDays: type === "adhoc" ? null : frequencyDays,
+        points,
+        assignedTo: assignedTo || [],
+        createdAt: Date.now(),
+      },
     ];
     persist("tasks", next, setTasks);
     setShowAddTask(false);
+  }
+  function editTask(id, { name, zoneId, type, frequencyDays, points, assignedTo }) {
+    persist(
+      "tasks",
+      tasks.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              name,
+              zoneId: zoneId || null,
+              type: type === "adhoc" ? "adhoc" : "recurring",
+              frequencyDays: type === "adhoc" ? null : frequencyDays,
+              points,
+              assignedTo: assignedTo || [],
+            }
+          : t
+      ),
+      setTasks
+    );
+    setEditTaskTarget(null);
   }
   function deleteTask(id) {
     persist("tasks", tasks.filter((t) => t.id !== id), setTasks);
@@ -504,6 +540,7 @@ export default function HouseholdApp() {
           <SettingsView
             members={members}
             zones={zones}
+            tasks={tasks}
             currentUserId={currentUser}
             onAddMember={() => setShowAddMember(true)}
             onDeleteMember={deleteMember}
@@ -514,6 +551,8 @@ export default function HouseholdApp() {
             onResetStats={resetStats}
             onMasterReset={masterReset}
             onSetAllowance={(m) => setAllowanceTargetMember(m)}
+            onEditTask={(t) => setEditTaskTarget(t)}
+            onDeleteTask={deleteTask}
           />
         )}
       </div>
@@ -529,7 +568,16 @@ export default function HouseholdApp() {
       </div>
 
       {showAddTask && (
-        <AddTaskModal zones={zones} members={members} onClose={() => setShowAddTask(false)} onSave={addTask} />
+        <TaskFormModal zones={zones} members={members} onClose={() => setShowAddTask(false)} onSave={addTask} />
+      )}
+      {editTaskTarget && (
+        <TaskFormModal
+          zones={zones}
+          members={members}
+          initial={editTaskTarget}
+          onClose={() => setEditTaskTarget(null)}
+          onSave={(payload) => editTask(editTaskTarget.id, payload)}
+        />
       )}
       {showAddZone && (
         <SimpleInputModal title="Bereich hinzufügen" placeholder="z.B. Küche" onClose={() => setShowAddZone(false)} onSave={addZone} />
@@ -754,11 +802,17 @@ const ZONE_CARD_COLORS = ["#3E5C76", "#4B6B43", "#8A6D3B", "#6B4E71", "#2F4538",
 function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone, onOpenHistory }) {
   const [openZoneId, setOpenZoneId] = useState(null);
   const [viewMode, setViewMode] = useState("list");
+  const [sortMode, setSortMode] = useState("dringlichkeit");
 
   const visibleTasks = useMemo(() => {
-    if (isAdmin) return tasks;
-    return tasks.filter((t) => !t.assignedTo || t.assignedTo === currentUserId);
-  }, [tasks, isAdmin, currentUserId]);
+    return tasks.filter((t) => !t.assignedTo || t.assignedTo.length === 0 || t.assignedTo.includes(currentUserId));
+  }, [tasks, currentUserId]);
+
+  const recurringVisible = useMemo(() => visibleTasks.filter((t) => t.type !== "adhoc"), [visibleTasks]);
+  const adhocVisible = useMemo(() => visibleTasks.filter((t) => t.type === "adhoc"), [visibleTasks]);
+
+  const assigneeNames = (task) =>
+    (task.assignedTo || []).map((id) => memberById(id)?.name).filter(Boolean).join(", ");
 
   const zoneNameById = useMemo(() => {
     const map = {};
@@ -773,25 +827,32 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
     return map;
   }, [zones]);
 
+  function sortItems(items) {
+    if (sortMode === "punkte") {
+      return items.sort((a, b) => b.task.points - a.task.points || urgencyValue(b.dirt) - urgencyValue(a.dirt));
+    }
+    return items.sort((a, b) => urgencyValue(b.dirt) - urgencyValue(a.dirt));
+  }
+
   const flatSorted = useMemo(() => {
-    return visibleTasks
-      .map((t) => ({ task: t, dirt: getDirtiness(t, log) }))
-      .sort((a, b) => urgencyValue(b.dirt) - urgencyValue(a.dirt));
-  }, [visibleTasks, log]);
+    return sortItems(recurringVisible.map((t) => ({ task: t, dirt: getDirtiness(t, log) })));
+  }, [recurringVisible, log, sortMode]);
+
+  const adhocSorted = useMemo(() => {
+    return [...adhocVisible].sort((a, b) => b.points - a.points);
+  }, [adhocVisible]);
 
   const grouped = useMemo(() => {
     const byZone = {};
     zones.forEach((z) => (byZone[z.id] = []));
     byZone.__none = [];
-    visibleTasks.forEach((t) => {
+    recurringVisible.forEach((t) => {
       const key = t.zoneId && byZone[t.zoneId] ? t.zoneId : "__none";
       byZone[key].push(t);
     });
 
     function buildGroup(zone, taskList, colorIndex) {
-      const items = taskList
-        .map((t) => ({ task: t, dirt: getDirtiness(t, log) }))
-        .sort((a, b) => urgencyValue(b.dirt) - urgencyValue(a.dirt));
+      const items = sortItems(taskList.map((t) => ({ task: t, dirt: getDirtiness(t, log) })));
       const avgRatio = items.length === 0 ? 0 : items.reduce((sum, x) => sum + x.dirt.ratio, 0) / items.length;
       const maxUrgency = items.length === 0 ? -Infinity : Math.max(...items.map((x) => urgencyValue(x.dirt)));
       return { zone, items, avgRatio, maxUrgency, cardColor: ZONE_CARD_COLORS[colorIndex % ZONE_CARD_COLORS.length] };
@@ -802,7 +863,7 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
       groups.push(buildGroup({ id: "__none", name: "Sonstiges" }, byZone.__none, zones.length));
     }
     return groups.filter((g) => g.items.length > 0).sort((a, b) => b.maxUrgency - a.maxUrgency);
-  }, [visibleTasks, zones, log]);
+  }, [recurringVisible, zones, log, sortMode]);
 
   const openGroup = grouped.find((g) => g.zone.id === openZoneId);
 
@@ -852,7 +913,7 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
             key={t.id}
             task={t}
             dirt={dirt}
-            assignee={t.assignedTo ? memberById(t.assignedTo) : null}
+            assigneeText={assigneeNames(t)}
             isAdmin={isAdmin}
             onComplete={() => onComplete(t)}
             onCompleteAt={() => onCompleteAt(t)}
@@ -913,7 +974,54 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
         </div>
       </div>
 
-      {grouped.length === 0 && (
+      {viewMode === "list" && (
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
+          <ArrowUpDown size={13} color="#a0a09a" />
+          <span style={{ fontSize: "11.5px", color: "#a0a09a", marginRight: "2px" }}>Sortieren:</span>
+          {[
+            { key: "dringlichkeit", label: "Dringlichkeit" },
+            { key: "punkte", label: "Punkte" },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => setSortMode(opt.key)}
+              style={{
+                border: "none",
+                borderRadius: "999px",
+                padding: "4px 10px",
+                fontSize: "11.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: sortMode === opt.key ? "#2F4538" : "#EDECE4",
+                color: sortMode === opt.key ? "#fff" : "#5a5a52",
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {adhocSorted.length > 0 && (
+        <div style={{ marginBottom: "16px" }}>
+          <div style={{ fontSize: "12px", color: "#a0a09a", margin: "0 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
+            <Sparkles size={13} /> Ad-hoc
+          </div>
+          {adhocSorted.map((t) => (
+            <AdhocTaskRow
+              key={t.id}
+              task={t}
+              assigneeText={assigneeNames(t)}
+              zoneName={t.zoneId ? zoneNameById[t.zoneId] : null}
+              isAdmin={isAdmin}
+              onComplete={() => onComplete(t)}
+              onDelete={() => onDeleteTask(t.id)}
+            />
+          ))}
+        </div>
+      )}
+
+      {grouped.length === 0 && adhocSorted.length === 0 && (
         <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>
           Noch keine Aufgaben.
         </p>
@@ -977,7 +1085,7 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
               zoneName={t.zoneId ? zoneNameById[t.zoneId] : "Sonstiges"}
               color={t.zoneId ? zoneColorById[t.zoneId] : zoneColorById.__none}
               asCard
-              assignee={t.assignedTo ? memberById(t.assignedTo) : null}
+              assigneeText={assigneeNames(t)}
               isAdmin={isAdmin}
               onComplete={() => onComplete(t)}
               onCompleteAt={() => onCompleteAt(t)}
@@ -1028,7 +1136,7 @@ function PillBar({ ratio, color }) {
   );
 }
 
-function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory, zoneName, color, asCard }) {
+function ZoneTaskRow({ task, dirt, assigneeText, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory, zoneName, color, asCard }) {
   const overdue = dirt.overdueDays > 0;
   return (
     <div
@@ -1053,7 +1161,7 @@ function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "14.5px", fontWeight: 600, color: "#fff" }}>{task.name}</div>
           <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.7)", marginTop: "1px", marginBottom: "3px" }}>
-            {task.points} Pkt.{zoneName ? ` · ${zoneName}` : ""}{assignee ? ` · ${assignee.name}` : ""}
+            {task.points} Pkt.{zoneName ? ` · ${zoneName}` : ""}{assigneeText ? ` · ${assigneeText}` : ""}
           </div>
           {overdue ? (
             <span
@@ -1116,6 +1224,30 @@ function ZoneTaskRow({ task, dirt, assignee, isAdmin, onComplete, onCompleteAt, 
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function AdhocTaskRow({ task, assigneeText, zoneName, isAdmin, onComplete, onDelete }) {
+  return (
+    <div style={{ background: "#8A6D3B", borderRadius: "14px", padding: "12px", marginBottom: "10px", display: "flex", alignItems: "center", gap: "10px" }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: "14.5px", fontWeight: 600, color: "#fff" }}>{task.name}</div>
+        <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.75)", marginTop: "1px" }}>
+          {task.points} Pkt.{zoneName ? ` · ${zoneName}` : ""}{assigneeText ? ` · ${assigneeText}` : " · Offen für alle"}
+        </div>
+      </div>
+      <button
+        onClick={onComplete}
+        style={{ border: "none", background: "rgba(255,255,255,0.95)", color: "#2a2a26", borderRadius: "12px", height: "42px", padding: "0 14px", fontSize: "13.5px", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}
+      >
+        <CheckCircle2 size={17} /> Erledigt
+      </button>
+      {isAdmin && (
+        <button onClick={onDelete} style={{ border: "none", background: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: "4px", flexShrink: 0 }}>
+          <Trash2 size={15} />
+        </button>
+      )}
     </div>
   );
 }
@@ -1239,7 +1371,7 @@ function HistoryView({ log }) {
   );
 }
 
-function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats, onMasterReset, onSetAllowance }) {
+function SettingsView({ members, zones, tasks, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats, onMasterReset, onSetAllowance, onEditTask, onDeleteTask }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [confirmingMasterReset, setConfirmingMasterReset] = useState(false);
 
@@ -1298,6 +1430,37 @@ function SettingsView({ members, zones, currentUserId, onAddMember, onDeleteMemb
       <button onClick={onAddZone} style={{ ...dashedBtnStyle, width: "100%", marginTop: "4px" }}>
         <Plus size={16} /> Bereich hinzufügen
       </button>
+
+      <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
+        Aufgaben verwalten
+      </div>
+      {tasks.length === 0 && (
+        <p style={{ color: "#c6c5bc", fontSize: "13px", marginBottom: "8px" }}>Noch keine Aufgaben.</p>
+      )}
+      {tasks.map((t) => {
+        const zoneName = zones.find((z) => z.id === t.zoneId)?.name;
+        const assigneeNames = (t.assignedTo || [])
+          .map((id) => members.find((m) => m.id === id)?.name)
+          .filter(Boolean)
+          .join(", ");
+        return (
+          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "9px 12px", marginBottom: "7px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: "14px", color: "#2a2a26" }}>{t.name}</div>
+              <div style={{ fontSize: "11px", color: "#a0a09a", marginTop: "1px" }}>
+                {t.type === "adhoc" ? "Ad-hoc" : `Alle ${t.frequencyDays} Tg.`}
+                {zoneName ? ` · ${zoneName}` : ""} · {t.points} Pkt. · {assigneeNames || "Offen für alle"}
+              </div>
+            </div>
+            <button onClick={() => onEditTask(t)} style={{ border: "none", background: "none", color: "#2F4538", cursor: "pointer", padding: "4px" }} title="Bearbeiten">
+              <Pencil size={15} />
+            </button>
+            <button onClick={() => onDeleteTask(t.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
+              <Trash2 size={15} />
+            </button>
+          </div>
+        );
+      })}
 
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
         Statistik
@@ -1437,12 +1600,13 @@ function SimpleInputModal({ title, placeholder, onClose, onSave }) {
   );
 }
 
-function AddTaskModal({ zones, members, onClose, onSave }) {
-  const [name, setName] = useState("");
-  const [zoneId, setZoneId] = useState(zones[0]?.id || "");
-  const [frequencyDays, setFrequencyDays] = useState("7");
-  const [points, setPoints] = useState("5");
-  const [assignedTo, setAssignedTo] = useState("");
+function TaskFormModal({ zones, members, initial, onClose, onSave }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [zoneId, setZoneId] = useState(initial?.zoneId || zones[0]?.id || "");
+  const [type, setType] = useState(initial?.type === "adhoc" ? "adhoc" : "recurring");
+  const [frequencyDays, setFrequencyDays] = useState(String(initial?.frequencyDays || 7));
+  const [points, setPoints] = useState(String(initial?.points || 5));
+  const [assignedTo, setAssignedTo] = useState(initial?.assignedTo || []);
   const [error, setError] = useState("");
 
   function numChange(setter) {
@@ -1451,9 +1615,33 @@ function AddTaskModal({ zones, members, onClose, onSave }) {
       setError("");
     };
   }
+  function toggleAssignee(id) {
+    setAssignedTo((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  const typeBtnStyle = (active) => ({
+    flex: 1,
+    border: active ? "1px solid #2F4538" : "1px solid #ddd",
+    background: active ? "#2F4538" : "none",
+    color: active ? "#fff" : "#5a5a52",
+    borderRadius: "10px",
+    padding: "9px",
+    fontSize: "13px",
+    fontWeight: 600,
+    cursor: "pointer",
+  });
+  const chipStyle = (active) => ({
+    border: active ? "1px solid #2F4538" : "1px solid #ddd",
+    background: active ? "#2F4538" : "none",
+    color: active ? "#fff" : "#5a5a52",
+    borderRadius: "999px",
+    padding: "6px 12px",
+    fontSize: "12.5px",
+    cursor: "pointer",
+  });
 
   return (
-    <ModalShell title="Neue Aufgabe" onClose={onClose}>
+    <ModalShell title={initial ? "Aufgabe bearbeiten" : "Neue Aufgabe"} onClose={onClose}>
       <input style={inputStyle} placeholder="z.B. Boden wischen" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} />
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Bereich</label>
       <select style={inputStyle} value={zoneId} onChange={(e) => setZoneId(e.target.value)}>
@@ -1462,17 +1650,31 @@ function AddTaskModal({ zones, members, onClose, onSave }) {
           <option key={z.id} value={z.id}>{z.name}</option>
         ))}
       </select>
-      <label style={{ fontSize: "12px", color: "#8a897f" }}>Alle wie viele Tage fällig?</label>
-      <input style={inputStyle} type="text" inputMode="numeric" placeholder="7" value={frequencyDays} onChange={numChange(setFrequencyDays)} />
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Art der Aufgabe</label>
+      <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+        <button type="button" style={typeBtnStyle(type === "recurring")} onClick={() => setType("recurring")}>
+          Regelmässig
+        </button>
+        <button type="button" style={typeBtnStyle(type === "adhoc")} onClick={() => setType("adhoc")}>
+          Ad-hoc
+        </button>
+      </div>
+      {type === "recurring" && (
+        <>
+          <label style={{ fontSize: "12px", color: "#8a897f" }}>Alle wie viele Tage fällig?</label>
+          <input style={inputStyle} type="text" inputMode="numeric" placeholder="7" value={frequencyDays} onChange={numChange(setFrequencyDays)} />
+        </>
+      )}
       <label style={{ fontSize: "12px", color: "#8a897f" }}>Punkte</label>
       <input style={inputStyle} type="text" inputMode="numeric" placeholder="5" value={points} onChange={numChange(setPoints)} />
-      <label style={{ fontSize: "12px", color: "#8a897f" }}>Zuständig (optional)</label>
-      <select style={inputStyle} value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
-        <option value="">Egal wer</option>
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Zuständig (Mehrfachauswahl, leer = offen für alle)</label>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "12px" }}>
         {members.map((m) => (
-          <option key={m.id} value={m.id}>{m.name}</option>
+          <button type="button" key={m.id} style={chipStyle(assignedTo.includes(m.id))} onClick={() => toggleAssignee(m.id)}>
+            {m.name}
+          </button>
         ))}
-      </select>
+      </div>
       {error && <div style={{ color: "#8A4B3B", fontSize: "12px", marginBottom: "8px" }}>{error}</div>}
       <button
         style={primaryBtn}
@@ -1480,10 +1682,10 @@ function AddTaskModal({ zones, members, onClose, onSave }) {
           if (!name.trim()) return setError("Bitte einen Namen eingeben.");
           const freq = Math.max(1, parseInt(frequencyDays, 10) || 1);
           const pts = Math.max(1, parseInt(points, 10) || 1);
-          onSave({ name: name.trim(), zoneId, frequencyDays: freq, points: pts, assignedTo });
+          onSave({ name: name.trim(), zoneId, type, frequencyDays: freq, points: pts, assignedTo });
         }}
       >
-        Aufgabe speichern
+        {initial ? "Speichern" : "Aufgabe speichern"}
       </button>
     </ModalShell>
   );
