@@ -132,6 +132,7 @@ export default function HouseholdApp() {
   const [completeAtTask, setCompleteAtTask] = useState(null);
   const [historyTask, setHistoryTask] = useState(null);
   const [editTaskTarget, setEditTaskTarget] = useState(null);
+  const [editZoneTarget, setEditZoneTarget] = useState(null);
 
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installDismissed, setInstallDismissed] = useState(
@@ -318,10 +319,14 @@ export default function HouseholdApp() {
   function deleteTask(id) {
     persist("tasks", tasks.filter((t) => t.id !== id), setTasks);
   }
-  function addZone(name) {
-    const next = [...zones, { id: uid(), name }];
+  function addZone({ name, color }) {
+    const next = [...zones, { id: uid(), name, color: color || null }];
     persist("zones", next, setZones);
     setShowAddZone(false);
+  }
+  function editZone(id, { name, color }) {
+    persist("zones", zones.map((z) => (z.id === id ? { ...z, name, color: color || null } : z)), setZones);
+    setEditZoneTarget(null);
   }
   function deleteZone(id) {
     persist("zones", zones.filter((z) => z.id !== id), setZones);
@@ -511,13 +516,9 @@ export default function HouseholdApp() {
             zones={zones}
             log={log}
             memberById={memberById}
-            isAdmin={isAdmin}
             currentUserId={currentUser}
             onComplete={completeTask}
             onCompleteAt={(t) => setCompleteAtTask(t)}
-            onDeleteTask={deleteTask}
-            onAddTask={() => setShowAddTask(true)}
-            onAddZone={() => setShowAddZone(true)}
             onOpenHistory={(t) => setHistoryTask(t)}
           />
         )}
@@ -547,12 +548,14 @@ export default function HouseholdApp() {
             onSetPin={(m) => setPinTargetMember(m)}
             onSetRole={setMemberRole}
             onAddZone={() => setShowAddZone(true)}
+            onEditZone={(z) => setEditZoneTarget(z)}
             onDeleteZone={deleteZone}
             onResetStats={resetStats}
             onMasterReset={masterReset}
             onSetAllowance={(m) => setAllowanceTargetMember(m)}
             onEditTask={(t) => setEditTaskTarget(t)}
             onDeleteTask={deleteTask}
+            onAddTask={() => setShowAddTask(true)}
           />
         )}
       </div>
@@ -580,7 +583,14 @@ export default function HouseholdApp() {
         />
       )}
       {showAddZone && (
-        <SimpleInputModal title="Bereich hinzufügen" placeholder="z.B. Küche" onClose={() => setShowAddZone(false)} onSave={addZone} />
+        <ZoneFormModal onClose={() => setShowAddZone(false)} onSave={addZone} />
+      )}
+      {editZoneTarget && (
+        <ZoneFormModal
+          initial={editZoneTarget}
+          onClose={() => setEditZoneTarget(null)}
+          onSave={(payload) => editZone(editZoneTarget.id, payload)}
+        />
       )}
       {showAddMember && (
         <SimpleInputModal title="Person hinzufügen" placeholder="Name" onClose={() => setShowAddMember(false)} onSave={addMember} />
@@ -799,10 +809,11 @@ function DirtBar({ percent, color }) {
 
 const ZONE_CARD_COLORS = ["#3E5C76", "#4B6B43", "#8A6D3B", "#6B4E71", "#2F4538", "#8A4B3B", "#4B6B85", "#6B5E4B"];
 
-function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onComplete, onCompleteAt, onDeleteTask, onAddTask, onAddZone, onOpenHistory }) {
+function TasksView({ tasks, zones, log, memberById, currentUserId, onComplete, onCompleteAt, onOpenHistory }) {
   const [openZoneId, setOpenZoneId] = useState(null);
   const [viewMode, setViewMode] = useState("list");
   const [sortMode, setSortMode] = useState("dringlichkeit");
+  const [taskMode, setTaskMode] = useState("recurring");
 
   const visibleTasks = useMemo(() => {
     return tasks.filter((t) => !t.assignedTo || t.assignedTo.length === 0 || t.assignedTo.includes(currentUserId));
@@ -822,7 +833,7 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
 
   const zoneColorById = useMemo(() => {
     const map = {};
-    zones.forEach((z, i) => (map[z.id] = ZONE_CARD_COLORS[i % ZONE_CARD_COLORS.length]));
+    zones.forEach((z, i) => (map[z.id] = z.color || ZONE_CARD_COLORS[i % ZONE_CARD_COLORS.length]));
     map.__none = ZONE_CARD_COLORS[zones.length % ZONE_CARD_COLORS.length];
     return map;
   }, [zones]);
@@ -855,7 +866,7 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
       const items = sortItems(taskList.map((t) => ({ task: t, dirt: getDirtiness(t, log) })));
       const avgRatio = items.length === 0 ? 0 : items.reduce((sum, x) => sum + x.dirt.ratio, 0) / items.length;
       const maxUrgency = items.length === 0 ? -Infinity : Math.max(...items.map((x) => urgencyValue(x.dirt)));
-      return { zone, items, avgRatio, maxUrgency, cardColor: ZONE_CARD_COLORS[colorIndex % ZONE_CARD_COLORS.length] };
+      return { zone, items, avgRatio, maxUrgency, cardColor: zone.color || ZONE_CARD_COLORS[colorIndex % ZONE_CARD_COLORS.length] };
     }
 
     const groups = zones.map((z, i) => buildGroup(z, byZone[z.id], i));
@@ -885,39 +896,14 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
         </button>
         <div style={{ fontSize: "19px", fontWeight: 700, color: "#fff", marginBottom: "10px" }}>{openGroup.zone.name}</div>
 
-        {isAdmin && (
-          <button
-            onClick={onAddTask}
-            style={{
-              width: "100%",
-              border: "1px dashed rgba(255,255,255,0.4)",
-              borderRadius: "12px",
-              background: "transparent",
-              padding: "9px",
-              color: "#fff",
-              fontSize: "13px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "6px",
-              marginBottom: "14px",
-              cursor: "pointer",
-            }}
-          >
-            <Plus size={15} /> Aufgabe in diesem Bereich
-          </button>
-        )}
-
         {openGroup.items.map(({ task: t, dirt }) => (
           <ZoneTaskRow
             key={t.id}
             task={t}
             dirt={dirt}
             assigneeText={assigneeNames(t)}
-            isAdmin={isAdmin}
             onComplete={() => onComplete(t)}
             onCompleteAt={() => onCompleteAt(t)}
-            onDelete={() => onDeleteTask(t.id)}
             onOpenHistory={() => onOpenHistory(t)}
           />
         ))}
@@ -925,175 +911,188 @@ function TasksView({ tasks, zones, log, memberById, isAdmin, currentUserId, onCo
     );
   }
 
+  const modeBtnStyle = (active) => ({
+    flex: 1,
+    border: "none",
+    borderRadius: "8px",
+    padding: "8px",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: 600,
+    background: active ? "#fff" : "transparent",
+    color: active ? "#2F4538" : "#a0a09a",
+    boxShadow: active ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+  });
+
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
-        {isAdmin && (
-          <>
-            <button onClick={onAddTask} style={dashedBtnStyle}>
-              <Plus size={16} /> Aufgabe
-            </button>
-            <button onClick={onAddZone} style={dashedBtnStyle}>
-              <Plus size={16} /> Bereich
-            </button>
-          </>
-        )}
-        <div style={{ display: "flex", background: "#EDECE4", borderRadius: "10px", padding: "3px", flexShrink: 0 }}>
-          <button
-            onClick={() => setViewMode("grid")}
-            title="Kacheln"
-            style={{
-              border: "none",
-              borderRadius: "7px",
-              padding: "6px 9px",
-              cursor: "pointer",
-              background: viewMode === "grid" ? "#fff" : "transparent",
-              color: viewMode === "grid" ? "#2F4538" : "#a0a09a",
-              display: "flex",
-              boxShadow: viewMode === "grid" ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
-            }}
-          >
-            <LayoutGrid size={15} />
-          </button>
-          <button
-            onClick={() => setViewMode("list")}
-            title="Liste"
-            style={{
-              border: "none",
-              borderRadius: "7px",
-              padding: "6px 9px",
-              cursor: "pointer",
-              background: viewMode === "list" ? "#fff" : "transparent",
-              color: viewMode === "list" ? "#2F4538" : "#a0a09a",
-              display: "flex",
-              boxShadow: viewMode === "list" ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
-            }}
-          >
-            <ListIcon size={15} />
-          </button>
-        </div>
+      <div style={{ display: "flex", background: "#EDECE4", borderRadius: "10px", padding: "3px", marginBottom: "14px" }}>
+        <button onClick={() => setTaskMode("recurring")} style={modeBtnStyle(taskMode === "recurring")}>
+          Regelmässig
+        </button>
+        <button onClick={() => setTaskMode("adhoc")} style={{ ...modeBtnStyle(taskMode === "adhoc"), display: "flex", alignItems: "center", justifyContent: "center", gap: "5px" }}>
+          <Sparkles size={13} /> Ad-hoc{adhocVisible.length > 0 ? ` (${adhocVisible.length})` : ""}
+        </button>
       </div>
 
-      {viewMode === "list" && (
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
-          <ArrowUpDown size={13} color="#a0a09a" />
-          <span style={{ fontSize: "11.5px", color: "#a0a09a", marginRight: "2px" }}>Sortieren:</span>
-          {[
-            { key: "dringlichkeit", label: "Dringlichkeit" },
-            { key: "punkte", label: "Punkte" },
-          ].map((opt) => (
-            <button
-              key={opt.key}
-              onClick={() => setSortMode(opt.key)}
-              style={{
-                border: "none",
-                borderRadius: "999px",
-                padding: "4px 10px",
-                fontSize: "11.5px",
-                fontWeight: 600,
-                cursor: "pointer",
-                background: sortMode === opt.key ? "#2F4538" : "#EDECE4",
-                color: sortMode === opt.key ? "#fff" : "#5a5a52",
-              }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {adhocSorted.length > 0 && (
-        <div style={{ marginBottom: "16px" }}>
-          <div style={{ fontSize: "12px", color: "#a0a09a", margin: "0 0 6px", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px" }}>
-            <Sparkles size={13} /> Ad-hoc
-          </div>
-          {adhocSorted.map((t) => (
-            <AdhocTaskRow
-              key={t.id}
-              task={t}
-              assigneeText={assigneeNames(t)}
-              zoneName={t.zoneId ? zoneNameById[t.zoneId] : null}
-              isAdmin={isAdmin}
-              onComplete={() => onComplete(t)}
-              onDelete={() => onDeleteTask(t.id)}
-            />
-          ))}
-        </div>
-      )}
-
-      {grouped.length === 0 && adhocSorted.length === 0 && (
-        <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>
-          Noch keine Aufgaben.
-        </p>
-      )}
-
-      {viewMode === "grid" ? (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-          {grouped.map((g) => {
-            const dotColor = g.avgRatio >= 1 ? OVERDUE_COLOR : g.avgRatio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
-            const overdueCount = g.items.filter((x) => x.dirt.overdueDays > 0).length;
-            return (
-              <button
-                key={g.zone.id}
-                onClick={() => setOpenZoneId(g.zone.id)}
-                style={{
-                  position: "relative",
-                  textAlign: "left",
-                  border: "none",
-                  borderRadius: "14px",
-                  background: g.cardColor,
-                  color: "#fff",
-                  padding: "14px",
-                  minHeight: "96px",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "space-between",
-                  cursor: "pointer",
-                }}
-              >
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "10px",
-                    right: "10px",
-                    width: "22px",
-                    height: "22px",
-                    borderRadius: "50%",
-                    background: "rgba(255,255,255,0.9)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: dotColor }} />
-                </div>
-                <span style={{ fontSize: "14px", fontWeight: 600, paddingRight: "26px" }}>{g.zone.name}</span>
-                <span style={{ fontSize: "11.5px", opacity: 0.85 }}>
-                  {overdueCount > 0 ? `${overdueCount} überfällig` : `${g.items.length} Aufgabe(n)`}
-                </span>
-              </button>
-            );
-          })}
+      {taskMode === "adhoc" ? (
+        <div>
+          {adhocSorted.length === 0 ? (
+            <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>
+              Keine Ad-hoc-Aufgaben im Pool.
+            </p>
+          ) : (
+            adhocSorted.map((t) => (
+              <AdhocTaskRow
+                key={t.id}
+                task={t}
+                assigneeText={assigneeNames(t)}
+                zoneName={t.zoneId ? zoneNameById[t.zoneId] : null}
+                onComplete={() => onComplete(t)}
+              />
+            ))
+          )}
         </div>
       ) : (
-        <div>
-          {flatSorted.map(({ task: t, dirt }) => (
-            <ZoneTaskRow
-              key={t.id}
-              task={t}
-              dirt={dirt}
-              zoneName={t.zoneId ? zoneNameById[t.zoneId] : "Sonstiges"}
-              color={t.zoneId ? zoneColorById[t.zoneId] : zoneColorById.__none}
-              asCard
-              assigneeText={assigneeNames(t)}
-              isAdmin={isAdmin}
-              onComplete={() => onComplete(t)}
-              onCompleteAt={() => onCompleteAt(t)}
-              onDelete={() => onDeleteTask(t.id)}
-              onOpenHistory={() => onOpenHistory(t)}
-            />
-          ))}
-        </div>
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+            <div style={{ display: "flex", background: "#EDECE4", borderRadius: "10px", padding: "3px", flexShrink: 0 }}>
+              <button
+                onClick={() => setViewMode("grid")}
+                title="Kacheln"
+                style={{
+                  border: "none",
+                  borderRadius: "7px",
+                  padding: "6px 9px",
+                  cursor: "pointer",
+                  background: viewMode === "grid" ? "#fff" : "transparent",
+                  color: viewMode === "grid" ? "#2F4538" : "#a0a09a",
+                  display: "flex",
+                  boxShadow: viewMode === "grid" ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                }}
+              >
+                <LayoutGrid size={15} />
+              </button>
+              <button
+                onClick={() => setViewMode("list")}
+                title="Liste"
+                style={{
+                  border: "none",
+                  borderRadius: "7px",
+                  padding: "6px 9px",
+                  cursor: "pointer",
+                  background: viewMode === "list" ? "#fff" : "transparent",
+                  color: viewMode === "list" ? "#2F4538" : "#a0a09a",
+                  display: "flex",
+                  boxShadow: viewMode === "list" ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                }}
+              >
+                <ListIcon size={15} />
+              </button>
+            </div>
+          </div>
+
+          {viewMode === "list" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
+              <ArrowUpDown size={13} color="#a0a09a" />
+              <span style={{ fontSize: "11.5px", color: "#a0a09a", marginRight: "2px" }}>Sortieren:</span>
+              {[
+                { key: "dringlichkeit", label: "Dringlichkeit" },
+                { key: "punkte", label: "Punkte" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setSortMode(opt.key)}
+                  style={{
+                    border: "none",
+                    borderRadius: "999px",
+                    padding: "4px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    background: sortMode === opt.key ? "#2F4538" : "#EDECE4",
+                    color: sortMode === opt.key ? "#fff" : "#5a5a52",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {grouped.length === 0 && (
+            <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>
+              Noch keine Aufgaben.
+            </p>
+          )}
+
+          {viewMode === "grid" ? (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+              {grouped.map((g) => {
+                const dotColor = g.avgRatio >= 1 ? OVERDUE_COLOR : g.avgRatio >= 0.5 ? WARN_COLOR : CLEAN_COLOR;
+                const overdueCount = g.items.filter((x) => x.dirt.overdueDays > 0).length;
+                return (
+                  <button
+                    key={g.zone.id}
+                    onClick={() => setOpenZoneId(g.zone.id)}
+                    style={{
+                      position: "relative",
+                      textAlign: "left",
+                      border: "none",
+                      borderRadius: "14px",
+                      background: g.cardColor,
+                      color: "#fff",
+                      padding: "14px",
+                      minHeight: "96px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "10px",
+                        right: "10px",
+                        width: "22px",
+                        height: "22px",
+                        borderRadius: "50%",
+                        background: "rgba(255,255,255,0.9)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: dotColor }} />
+                    </div>
+                    <span style={{ fontSize: "14px", fontWeight: 600, paddingRight: "26px" }}>{g.zone.name}</span>
+                    <span style={{ fontSize: "11.5px", opacity: 0.85 }}>
+                      {overdueCount > 0 ? `${overdueCount} überfällig` : `${g.items.length} Aufgabe(n)`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div>
+              {flatSorted.map(({ task: t, dirt }) => (
+                <ZoneTaskRow
+                  key={t.id}
+                  task={t}
+                  dirt={dirt}
+                  zoneName={t.zoneId ? zoneNameById[t.zoneId] : "Sonstiges"}
+                  color={t.zoneId ? zoneColorById[t.zoneId] : zoneColorById.__none}
+                  asCard
+                  assigneeText={assigneeNames(t)}
+                  onComplete={() => onComplete(t)}
+                  onCompleteAt={() => onCompleteAt(t)}
+                  onOpenHistory={() => onOpenHistory(t)}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1136,7 +1135,7 @@ function PillBar({ ratio, color }) {
   );
 }
 
-function ZoneTaskRow({ task, dirt, assigneeText, isAdmin, onComplete, onCompleteAt, onDelete, onOpenHistory, zoneName, color, asCard }) {
+function ZoneTaskRow({ task, dirt, assigneeText, onComplete, onCompleteAt, onOpenHistory, zoneName, color, asCard }) {
   const overdue = dirt.overdueDays > 0;
   return (
     <div
@@ -1215,20 +1214,12 @@ function ZoneTaskRow({ task, dirt, assigneeText, isAdmin, onComplete, onComplete
         >
           <Clock size={17} />
         </button>
-        {isAdmin && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            style={{ border: "none", background: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: "4px", flexShrink: 0 }}
-          >
-            <Trash2 size={15} />
-          </button>
-        )}
       </div>
     </div>
   );
 }
 
-function AdhocTaskRow({ task, assigneeText, zoneName, isAdmin, onComplete, onDelete }) {
+function AdhocTaskRow({ task, assigneeText, zoneName, onComplete }) {
   return (
     <div style={{ background: "#8A6D3B", borderRadius: "14px", padding: "12px", marginBottom: "10px", display: "flex", alignItems: "center", gap: "10px" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -1243,11 +1234,6 @@ function AdhocTaskRow({ task, assigneeText, zoneName, isAdmin, onComplete, onDel
       >
         <CheckCircle2 size={17} /> Erledigt
       </button>
-      {isAdmin && (
-        <button onClick={onDelete} style={{ border: "none", background: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: "4px", flexShrink: 0 }}>
-          <Trash2 size={15} />
-        </button>
-      )}
     </div>
   );
 }
@@ -1371,13 +1357,47 @@ function HistoryView({ log }) {
   );
 }
 
-function SettingsView({ members, zones, tasks, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onDeleteZone, onResetStats, onMasterReset, onSetAllowance, onEditTask, onDeleteTask }) {
+function SettingsView({ members, zones, tasks, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onEditZone, onDeleteZone, onResetStats, onMasterReset, onSetAllowance, onEditTask, onDeleteTask, onAddTask }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [confirmingMasterReset, setConfirmingMasterReset] = useState(false);
 
   return (
     <div>
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "0 0 6px", fontWeight: 500 }}>
+        Aufgaben verwalten
+      </div>
+      {tasks.length === 0 && (
+        <p style={{ color: "#c6c5bc", fontSize: "13px", marginBottom: "8px" }}>Noch keine Aufgaben.</p>
+      )}
+      {tasks.map((t) => {
+        const zoneName = zones.find((z) => z.id === t.zoneId)?.name;
+        const assigneeNames = (t.assignedTo || [])
+          .map((id) => members.find((m) => m.id === id)?.name)
+          .filter(Boolean)
+          .join(", ");
+        return (
+          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "9px 12px", marginBottom: "7px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: "14px", color: "#2a2a26" }}>{t.name}</div>
+              <div style={{ fontSize: "11px", color: "#a0a09a", marginTop: "1px" }}>
+                {t.type === "adhoc" ? "Ad-hoc" : `Alle ${t.frequencyDays} Tg.`}
+                {zoneName ? ` · ${zoneName}` : ""} · {t.points} Pkt. · {assigneeNames || "Offen für alle"}
+              </div>
+            </div>
+            <button onClick={() => onEditTask(t)} style={{ border: "none", background: "none", color: "#2F4538", cursor: "pointer", padding: "4px" }} title="Bearbeiten">
+              <Pencil size={15} />
+            </button>
+            <button onClick={() => onDeleteTask(t.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
+              <Trash2 size={15} />
+            </button>
+          </div>
+        );
+      })}
+      <button onClick={onAddTask} style={{ ...dashedBtnStyle, width: "100%", marginTop: "4px" }}>
+        <Plus size={16} /> Aufgabe hinzufügen
+      </button>
+
+      <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
         Familienmitglieder
       </div>
       {members.map((m) => (
@@ -1419,9 +1439,13 @@ function SettingsView({ members, zones, tasks, currentUserId, onAddMember, onDel
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
         Bereiche
       </div>
-      {zones.map((z) => (
+      {zones.map((z, i) => (
         <div key={z.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "9px 12px", marginBottom: "7px" }}>
+          <div style={{ width: "16px", height: "16px", borderRadius: "50%", background: z.color || ZONE_CARD_COLORS[i % ZONE_CARD_COLORS.length], flexShrink: 0 }} />
           <div style={{ flex: 1, fontSize: "14px", color: "#2a2a26" }}>{z.name}</div>
+          <button onClick={() => onEditZone(z)} style={{ border: "none", background: "none", color: "#2F4538", cursor: "pointer", padding: "4px" }} title="Bearbeiten">
+            <Pencil size={15} />
+          </button>
           <button onClick={() => onDeleteZone(z.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
             <Trash2 size={15} />
           </button>
@@ -1430,37 +1454,6 @@ function SettingsView({ members, zones, tasks, currentUserId, onAddMember, onDel
       <button onClick={onAddZone} style={{ ...dashedBtnStyle, width: "100%", marginTop: "4px" }}>
         <Plus size={16} /> Bereich hinzufügen
       </button>
-
-      <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
-        Aufgaben verwalten
-      </div>
-      {tasks.length === 0 && (
-        <p style={{ color: "#c6c5bc", fontSize: "13px", marginBottom: "8px" }}>Noch keine Aufgaben.</p>
-      )}
-      {tasks.map((t) => {
-        const zoneName = zones.find((z) => z.id === t.zoneId)?.name;
-        const assigneeNames = (t.assignedTo || [])
-          .map((id) => members.find((m) => m.id === id)?.name)
-          .filter(Boolean)
-          .join(", ");
-        return (
-          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "9px 12px", marginBottom: "7px" }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: "14px", color: "#2a2a26" }}>{t.name}</div>
-              <div style={{ fontSize: "11px", color: "#a0a09a", marginTop: "1px" }}>
-                {t.type === "adhoc" ? "Ad-hoc" : `Alle ${t.frequencyDays} Tg.`}
-                {zoneName ? ` · ${zoneName}` : ""} · {t.points} Pkt. · {assigneeNames || "Offen für alle"}
-              </div>
-            </div>
-            <button onClick={() => onEditTask(t)} style={{ border: "none", background: "none", color: "#2F4538", cursor: "pointer", padding: "4px" }} title="Bearbeiten">
-              <Pencil size={15} />
-            </button>
-            <button onClick={() => onDeleteTask(t.id)} style={{ border: "none", background: "none", color: "#c6c5bc", cursor: "pointer" }}>
-              <Trash2 size={15} />
-            </button>
-          </div>
-        );
-      })}
 
       <div style={{ fontSize: "12px", color: "#a0a09a", margin: "20px 0 6px", fontWeight: 500 }}>
         Statistik
@@ -1580,8 +1573,8 @@ const primaryBtn = {
   cursor: "pointer",
 };
 
-function SimpleInputModal({ title, placeholder, onClose, onSave }) {
-  const [value, setValue] = useState("");
+function SimpleInputModal({ title, placeholder, initialValue, submitLabel, onClose, onSave }) {
+  const [value, setValue] = useState(initialValue || "");
   const [error, setError] = useState("");
   return (
     <ModalShell title={title} onClose={onClose}>
@@ -1594,7 +1587,50 @@ function SimpleInputModal({ title, placeholder, onClose, onSave }) {
           onSave(value.trim());
         }}
       >
-        Speichern
+        {submitLabel || "Speichern"}
+      </button>
+    </ModalShell>
+  );
+}
+
+function ZoneFormModal({ initial, onClose, onSave }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [color, setColor] = useState(initial?.color || "");
+  const [error, setError] = useState("");
+
+  return (
+    <ModalShell title={initial ? "Bereich bearbeiten" : "Bereich hinzufügen"} onClose={onClose}>
+      <input style={inputStyle} placeholder="z.B. Küche" value={name} onChange={(e) => { setName(e.target.value); setError(""); }} />
+      <label style={{ fontSize: "12px", color: "#8a897f" }}>Farbe</label>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", margin: "8px 0 14px" }}>
+        {ZONE_CARD_COLORS.map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => setColor(c)}
+            title={c}
+            style={{
+              width: "30px",
+              height: "30px",
+              borderRadius: "50%",
+              background: c,
+              border: color === c ? "2px solid #2a2a26" : "2px solid transparent",
+              boxShadow: color === c ? "0 0 0 2px #fff inset" : "none",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          />
+        ))}
+      </div>
+      {error && <div style={{ color: "#8A4B3B", fontSize: "12px", marginBottom: "8px" }}>{error}</div>}
+      <button
+        style={primaryBtn}
+        onClick={() => {
+          if (!name.trim()) return setError("Bitte einen Namen eingeben.");
+          onSave({ name: name.trim(), color: color || null });
+        }}
+      >
+        {initial ? "Speichern" : "Bereich speichern"}
       </button>
     </ModalShell>
   );
