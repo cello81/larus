@@ -1147,9 +1147,9 @@ function PillBar({ ratio, color }) {
   );
 }
 
-const SWIPE_THRESHOLD = 60;
+const SWIPE_THRESHOLD = 160;
 const SWIPE_TAP_THRESHOLD = 8;
-const SWIPE_MAX = 90;
+const SWIPE_MAX = 220;
 
 function SwipeCompleteButton({ onCompleteNow, onCompleteAt, height = 46, fontSize = "14.5px", width }) {
   const [dragX, setDragX] = useState(0);
