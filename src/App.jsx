@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet, AlertTriangle, Pencil, Sparkles, ArrowUpDown } from "lucide-react";
+import { CheckCircle2, Plus, Trophy, History, Settings, X, Gift, Trash2, LogOut, Download, Share, Delete, ArrowLeft, Lock, Clock, LayoutGrid, List as ListIcon, Wallet, AlertTriangle, Pencil, Sparkles, ArrowUpDown, RotateCcw } from "lucide-react";
 
 const MEMBER_COLORS = [
   { bg: "#2F4538", text: "#FFFFFF" },
@@ -77,7 +77,7 @@ function taskFrequencyDays(task) {
 }
 
 function lastCompletedAt(taskId, log) {
-  const entries = log.filter((e) => e.taskId === taskId && e.type === "complete");
+  const entries = log.filter((e) => e.taskId === taskId && e.type === "complete" && !e.rejected);
   if (entries.length === 0) return null;
   return entries.reduce((a, b) => (a.timestamp > b.timestamp ? a : b)).timestamp;
 }
@@ -228,6 +228,7 @@ export default function HouseholdApp() {
       overall[m.id] = 0;
     });
     log.forEach((entry) => {
+      if (entry.rejected) return;
       if (entry.timestamp >= overallResetAt) {
         overall[entry.memberId] = (overall[entry.memberId] || 0) + entry.points;
       }
@@ -244,7 +245,7 @@ export default function HouseholdApp() {
       if (!m.allowance?.enabled) return;
       const since = m.allowancePaidAt || 0;
       const earned = log
-        .filter((e) => e.memberId === m.id && e.type === "complete" && e.timestamp >= since)
+        .filter((e) => e.memberId === m.id && e.type === "complete" && !e.rejected && e.timestamp >= since)
         .reduce((sum, e) => sum + e.points, 0);
       map[m.id] = Math.max(0, earned);
     });
@@ -362,7 +363,7 @@ export default function HouseholdApp() {
     const member = members.find((m) => m.id === currentUser);
     if (!member) return;
     const ts = timestamp || Date.now();
-    const alreadyDone = log.some((e) => e.taskId === task.id && e.type === "complete" && isSameDay(e.timestamp, ts));
+    const alreadyDone = log.some((e) => e.taskId === task.id && e.type === "complete" && !e.rejected && isSameDay(e.timestamp, ts));
     if (alreadyDone) {
       showToast(`"${task.name}" wurde für diesen Tag bereits als erledigt markiert.`);
       return;
@@ -378,6 +379,14 @@ export default function HouseholdApp() {
       timestamp: ts,
     };
     persist("log", [entry, ...log], setLog);
+  }
+
+  function rejectCompletion(entryId) {
+    persist(
+      "log",
+      log.map((e) => (e.id === entryId ? { ...e, rejected: true, rejectedAt: Date.now() } : e)),
+      setLog
+    );
   }
 
   function showToast(message) {
@@ -536,7 +545,9 @@ export default function HouseholdApp() {
             onPayout={payoutAllowance}
           />
         )}
-        {tab === "history" && <HistoryView log={log} />}
+        {tab === "history" && (
+          <HistoryView log={log} tasks={tasks} zones={zones} isAdmin={isAdmin} onReject={rejectCompletion} />
+        )}
         {tab === "settings" && isAdmin && (
           <SettingsView
             members={members}
@@ -1329,30 +1340,46 @@ function BoardView({ members, pointsByMember, allowanceProgress, rewards, isAdmi
   );
 }
 
-function HistoryView({ log }) {
+function HistoryView({ log, tasks, zones, isAdmin, onReject }) {
   if (log.length === 0) {
     return <p style={{ color: "#8a897f", fontSize: "14px", textAlign: "center", marginTop: "2rem" }}>Noch keine Einträge.</p>;
   }
   return (
     <div>
-      {log.slice(0, 100).map((e) => (
-        <div key={e.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "9px 12px", marginBottom: "7px" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: "13.5px", color: "#2a2a26" }}>
-              <strong style={{ fontWeight: 600 }}>{e.memberName}</strong>{" "}
-              {e.type === "complete" ? "hat erledigt:" : e.type === "payout" ? "" : "hat eingelöst:"} {e.taskName}
+      {log.slice(0, 100).map((e) => {
+        const task = e.taskId ? tasks.find((t) => t.id === e.taskId) : null;
+        const zoneName = task?.zoneId ? zones.find((z) => z.id === task.zoneId)?.name : null;
+        const rejected = !!e.rejected;
+        return (
+          <div key={e.id} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fff", borderRadius: "12px", padding: "9px 12px", marginBottom: "7px", opacity: rejected ? 0.55 : 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: "13.5px", color: "#2a2a26", textDecoration: rejected ? "line-through" : "none" }}>
+                <strong style={{ fontWeight: 600 }}>{e.memberName}</strong>{" "}
+                {e.type === "complete" ? "hat erledigt:" : e.type === "payout" ? "" : "hat eingelöst:"} {e.taskName}
+              </div>
+              <div style={{ fontSize: "11.5px", color: "#a0a09a", marginTop: "1px" }}>
+                {new Date(e.timestamp).toLocaleString("de-CH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                {zoneName ? ` · ${zoneName}` : ""}
+                {rejected && <span style={{ color: "#8A4B3B", fontWeight: 600 }}> · zurückgewiesen</span>}
+              </div>
             </div>
-            <div style={{ fontSize: "11.5px", color: "#a0a09a", marginTop: "1px" }}>
-              {new Date(e.timestamp).toLocaleString("de-CH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-            </div>
+            {e.type !== "payout" && (
+              <div style={{ fontSize: "13px", fontWeight: 600, color: e.points >= 0 ? "#4B6B43" : "#8A4B3B", textDecoration: rejected ? "line-through" : "none" }}>
+                {e.points >= 0 ? "+" : ""}{e.points}
+              </div>
+            )}
+            {isAdmin && e.type === "complete" && !rejected && (
+              <button
+                onClick={() => onReject(e.id)}
+                title="Als nicht erledigt zurückweisen"
+                style={{ border: "1px solid #f0d9d3", background: "none", color: "#8A4B3B", cursor: "pointer", borderRadius: "8px", padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0 }}
+              >
+                <RotateCcw size={14} />
+              </button>
+            )}
           </div>
-          {e.type !== "payout" && (
-            <div style={{ fontSize: "13px", fontWeight: 600, color: e.points >= 0 ? "#4B6B43" : "#8A4B3B" }}>
-              {e.points >= 0 ? "+" : ""}{e.points}
-            </div>
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1795,7 +1822,7 @@ function TaskHistoryModal({ task, log, onClose }) {
   const freq = taskFrequencyDays(task);
   const freqMs = freq * DAY_MS;
   const entries = log
-    .filter((e) => e.taskId === task.id && e.type === "complete")
+    .filter((e) => e.taskId === task.id && e.type === "complete" && !e.rejected)
     .sort((a, b) => a.timestamp - b.timestamp);
 
   const starts = [task.createdAt ?? (entries[0]?.timestamp ?? Date.now()), ...entries.map((e) => e.timestamp)];
