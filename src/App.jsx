@@ -960,6 +960,7 @@ function TasksView({ tasks, zones, log, memberById, currentUserId, onComplete, o
                 assigneeText={assigneeNames(t)}
                 zoneName={t.zoneId ? zoneNameById[t.zoneId] : null}
                 onComplete={() => onComplete(t)}
+                onCompleteAt={() => onCompleteAt(t)}
               />
             ))
           )}
@@ -1146,6 +1147,116 @@ function PillBar({ ratio, color }) {
   );
 }
 
+const SWIPE_THRESHOLD = 60;
+const SWIPE_TAP_THRESHOLD = 8;
+const SWIPE_MAX = 90;
+
+function SwipeCompleteButton({ onCompleteNow, onCompleteAt, height = 46, fontSize = "14.5px", width }) {
+  const [dragX, setDragX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const startXRef = useRef(0);
+
+  function handlePointerDown(e) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    startXRef.current = e.clientX;
+    setDragging(true);
+  }
+  function handlePointerMove(e) {
+    if (!dragging) return;
+    const dx = Math.max(-SWIPE_MAX, Math.min(SWIPE_MAX, e.clientX - startXRef.current));
+    setDragX(dx);
+  }
+  function handlePointerUp() {
+    if (dragX > SWIPE_THRESHOLD || Math.abs(dragX) <= SWIPE_TAP_THRESHOLD) {
+      onCompleteNow();
+    } else if (dragX < -SWIPE_THRESHOLD) {
+      onCompleteAt();
+    }
+    setDragging(false);
+    setDragX(0);
+  }
+
+  const rightProgress = dragX > 0 ? Math.min(1, dragX / SWIPE_THRESHOLD) : 0;
+  const leftProgress = dragX < 0 ? Math.min(1, -dragX / SWIPE_THRESHOLD) : 0;
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        flex: width ? "none" : 1,
+        width,
+        flexShrink: 0,
+        height,
+        borderRadius: "12px",
+        overflow: "hidden",
+        touchAction: "pan-y",
+        userSelect: "none",
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: WARN_COLOR,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-start",
+          paddingLeft: "16px",
+          gap: "6px",
+          color: "#fff",
+          fontSize: "12.5px",
+          fontWeight: 700,
+          opacity: leftProgress,
+        }}
+      >
+        <Clock size={16} /> Datum wählen
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: CLEAN_COLOR,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          paddingRight: "16px",
+          gap: "6px",
+          color: "#fff",
+          fontSize: "12.5px",
+          fontWeight: 700,
+          opacity: rightProgress,
+        }}
+      >
+        Jetzt erledigt <CheckCircle2 size={16} />
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          transform: `translateX(${dragX}px)`,
+          transition: dragging ? "none" : "transform 0.2s ease",
+          background: "rgba(255,255,255,0.95)",
+          borderRadius: "12px",
+          color: "#2a2a26",
+          fontSize,
+          fontWeight: 700,
+          cursor: "grab",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "7px",
+        }}
+      >
+        <CheckCircle2 size={19} /> Erledigt
+      </div>
+    </div>
+  );
+}
+
 function ZoneTaskRow({ task, dirt, assigneeText, onComplete, onCompleteAt, onOpenHistory, zoneName, color, asCard }) {
   const overdue = dirt.overdueDays > 0;
   return (
@@ -1197,40 +1308,14 @@ function ZoneTaskRow({ task, dirt, assigneeText, onComplete, onCompleteAt, onOpe
         </div>
         <PillBar ratio={dirt.ratio} color={dirt.color} />
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onComplete(); }}
-          style={{
-            flex: 1,
-            border: "none",
-            background: "rgba(255,255,255,0.95)",
-            color: "#2a2a26",
-            borderRadius: "12px",
-            height: "46px",
-            fontSize: "14.5px",
-            fontWeight: 700,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "7px",
-          }}
-        >
-          <CheckCircle2 size={19} /> Erledigt
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onCompleteAt(); }}
-          title="Mit Datum erledigen"
-          style={{ border: "none", background: "rgba(255,255,255,0.2)", color: "#fff", borderRadius: "12px", width: "46px", height: "46px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
-        >
-          <Clock size={17} />
-        </button>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }} onPointerDown={(e) => e.stopPropagation()}>
+        <SwipeCompleteButton onCompleteNow={onComplete} onCompleteAt={onCompleteAt} height={46} fontSize="14.5px" />
       </div>
     </div>
   );
 }
 
-function AdhocTaskRow({ task, assigneeText, zoneName, onComplete }) {
+function AdhocTaskRow({ task, assigneeText, zoneName, onComplete, onCompleteAt }) {
   return (
     <div style={{ background: "#8A6D3B", borderRadius: "14px", padding: "12px", marginBottom: "10px", display: "flex", alignItems: "center", gap: "10px" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -1239,12 +1324,7 @@ function AdhocTaskRow({ task, assigneeText, zoneName, onComplete }) {
           {task.points} Pkt.{zoneName ? ` · ${zoneName}` : ""}{assigneeText ? ` · ${assigneeText}` : " · Offen für alle"}
         </div>
       </div>
-      <button
-        onClick={onComplete}
-        style={{ border: "none", background: "rgba(255,255,255,0.95)", color: "#2a2a26", borderRadius: "12px", height: "42px", padding: "0 14px", fontSize: "13.5px", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}
-      >
-        <CheckCircle2 size={17} /> Erledigt
-      </button>
+      <SwipeCompleteButton onCompleteNow={onComplete} onCompleteAt={onCompleteAt} height={42} fontSize="13.5px" width="150px" />
     </div>
   );
 }
