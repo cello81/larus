@@ -1472,6 +1472,27 @@ function HistoryView({ log, tasks, zones, isAdmin, onReject }) {
 function SettingsView({ members, zones, tasks, currentUserId, onAddMember, onDeleteMember, onSetPin, onSetRole, onAddZone, onEditZone, onDeleteZone, onResetStats, onMasterReset, onSetAllowance, onEditTask, onDeleteTask, onAddTask }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [confirmingMasterReset, setConfirmingMasterReset] = useState(false);
+  const [taskSortMode, setTaskSortMode] = useState("alphabet");
+
+  const sortedTasks = useMemo(() => {
+    const zoneName = (t) => zones.find((z) => z.id === t.zoneId)?.name || "";
+    const list = [...tasks];
+    switch (taskSortMode) {
+      case "punkte":
+        return list.sort((a, b) => b.points - a.points || a.name.localeCompare(b.name, "de"));
+      case "bereich":
+        return list.sort((a, b) => zoneName(a).localeCompare(zoneName(b), "de") || a.name.localeCompare(b.name, "de"));
+      case "haeufigkeit":
+        return list.sort((a, b) => {
+          const fa = a.type === "adhoc" ? Infinity : a.frequencyDays;
+          const fb = b.type === "adhoc" ? Infinity : b.frequencyDays;
+          return fa - fb || a.name.localeCompare(b.name, "de");
+        });
+      case "alphabet":
+      default:
+        return list.sort((a, b) => a.name.localeCompare(b.name, "de"));
+    }
+  }, [tasks, zones, taskSortMode]);
 
   return (
     <div>
@@ -1481,7 +1502,36 @@ function SettingsView({ members, zones, tasks, currentUserId, onAddMember, onDel
       {tasks.length === 0 && (
         <p style={{ color: "#c6c5bc", fontSize: "13px", marginBottom: "8px" }}>Noch keine Aufgaben.</p>
       )}
-      {tasks.map((t) => {
+      {tasks.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
+          <ArrowUpDown size={13} color="#a0a09a" />
+          <span style={{ fontSize: "11.5px", color: "#a0a09a", marginRight: "2px" }}>Sortieren:</span>
+          {[
+            { key: "alphabet", label: "Alphabet" },
+            { key: "punkte", label: "Punkte" },
+            { key: "bereich", label: "Bereich" },
+            { key: "haeufigkeit", label: "Häufigkeit" },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => setTaskSortMode(opt.key)}
+              style={{
+                border: "none",
+                borderRadius: "999px",
+                padding: "4px 10px",
+                fontSize: "11.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: taskSortMode === opt.key ? "#2F4538" : "#EDECE4",
+                color: taskSortMode === opt.key ? "#fff" : "#5a5a52",
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {sortedTasks.map((t) => {
         const zoneName = zones.find((z) => z.id === t.zoneId)?.name;
         const assigneeNames = (t.assignedTo || [])
           .map((id) => members.find((m) => m.id === id)?.name)
