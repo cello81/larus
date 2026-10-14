@@ -1,8 +1,16 @@
 # Schutz für Dateien, die niemals direkt per HTTP aufgerufen werden dürfen.
 # Der eigentliche Schutz ist, dass die Daten ausserhalb des Webroots liegen
-# (DATA_DIR in config.php). Diese Regeln sind eine zweite Sicherung.
+# (DATA_DIR in config.php) und data.php eine Anmeldung verlangt. Diese Regeln
+# sind eine zweite Sicherung.
 <FilesMatch "^(config\.php|config\.example\.php|.*\.json)$">
     Require all denied
 </FilesMatch>
+
+# lib/ (interne Helfer) darf nie direkt aufgerufen werden, nur über die
+# Endpunkte im api/-Wurzelverzeichnis, die es per require einbinden.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^lib/ - [F,L]
+</IfModule>
 
 Options -Indexes
