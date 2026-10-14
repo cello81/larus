@@ -52,8 +52,10 @@ Die App und die Daten sind durch ein Familienpasswort geschützt, das der
 Server prüft (gleiches Muster wie bei Abrakadata, ohne Plesk-Passwortschutz):
 
 - `api/auth.php` meldet an (`login`), ab (`logout`) und prüft (`me`).
-  Die Sitzung liegt als Cookie auf dem Gerät und gilt standardmässig 90 Tage
-  (`SESSION_DAYS` in `config.php`).
+  Die Sitzung liegt als Cookie auf dem Gerät und gilt standardmässig 400 Tage
+  ab der letzten Nutzung (`SESSION_DAYS` in `config.php`). Browser erlauben
+  keine längere Laufzeit; bei regelmässiger Nutzung wird sie bei jeder
+  Anfrage erneuert und läuft nie ab.
 - `api/data.php` antwortet ohne gültige Anmeldung nur mit `401`.
 - Nach 10 falschen Eingaben von derselben Adresse ist die Anmeldung
   15 Minuten gesperrt.
