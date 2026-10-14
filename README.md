@@ -30,10 +30,18 @@ manuelles Bauen oder Hochladen mehr nötig.
 
 ## Wichtig
 
-- `public/api/data.json` wird bewusst NICHT versioniert (siehe
-  `.gitignore`). Es enthält die echten Live-Daten der Familie und
-  wird vom Server selbst angelegt/gepflegt. Ein Deployment
-  überschreibt es nicht.
+- Die Live-Daten der Familie (`data.json`, enthält auch die PINs)
+  liegen AUSSERHALB des Webroots, im Ordner `DATA_DIR` (gleiches
+  Muster wie bei Abrakadata). Sie werden nie versioniert (siehe
+  `.gitignore`) und von einem Deployment nicht überschrieben.
+- `public/api/config.php` gibt es nur auf dem Server und nie im Git.
+  Vorlage: `public/api/config.example.php`. Dort `DATA_DIR` auf einen
+  Ordner ausserhalb des Webroots setzen, z.B.
+  `/var/www/vhosts/marcini.ch/larus-data`. Ohne `config.php` startet das
+  Backend bewusst nicht.
+- Beim ersten Aufruf nach der Umstellung kopiert `data.php` eine noch
+  vorhandene `api/data.json` einmalig an den neuen Ort. Die alte Datei
+  danach von Hand löschen.
 - `public/api/data.php` ist das kleine Backend, das die Daten
   speichert. Bei Änderungen daran: vorsichtig testen, das ist die
   einzige serverseitige Logik.

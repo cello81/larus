@@ -1,0 +1,8 @@
+# Schutz für Dateien, die niemals direkt per HTTP aufgerufen werden dürfen.
+# Der eigentliche Schutz ist, dass die Daten ausserhalb des Webroots liegen
+# (DATA_DIR in config.php). Diese Regeln sind eine zweite Sicherung.
+<FilesMatch "^(config\.php|config\.example\.php|.*\.json)$">
+    Require all denied
+</FilesMatch>
+
+Options -Indexes

@@ -1,1 +1,5 @@
 node_modules
+
+# Server-Konfiguration und Live-Daten der Familie: nie committen
+/public/api/config.php
+/public/api/data.json
