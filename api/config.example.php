@@ -20,5 +20,7 @@ define('DATA_DIR', '');
 // Passwort eingeben (z.B. bei einem verlorenen Handy).
 define('FAMILY_PASSWORD_HASH', '');
 
-// Optional: wie lange eine Anmeldung auf einem Gerät gilt (Tage, Standard 90).
-// define('SESSION_DAYS', 90);
+// Optional: wie lange eine Anmeldung auf einem Gerät gilt, gerechnet ab der
+// letzten Nutzung (Tage, Standard 400). Browser begrenzen Cookies auf höchstens
+// 400 Tage, länger geht nicht; bei regelmässiger Nutzung läuft sie nie ab.
+// define('SESSION_DAYS', 400);

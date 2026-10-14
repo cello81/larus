@@ -97,8 +97,32 @@ function json_body(): array {
 }
 
 // --- Sitzung -----------------------------------------------------------------
+// Browser begrenzen die Laufzeit von Cookies (Chrome: höchstens 400 Tage), eine
+// unbegrenzte Anmeldung gibt es deshalb nicht. Stattdessen wird die Laufzeit bei
+// jeder Nutzung erneuert (siehe renew_session_cookie): wer die App mindestens
+// einmal in 400 Tagen öffnet, bleibt angemeldet.
 function session_days(): int {
-    return defined('SESSION_DAYS') ? max(1, (int) SESSION_DAYS) : 90;
+    return defined('SESSION_DAYS') ? max(1, (int) SESSION_DAYS) : 400;
+}
+
+function session_cookie_options(int $lifetime): array {
+    return [
+        'expires' => time() + $lifetime,
+        'path' => '/',
+        'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'),
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ];
+}
+
+// Setzt das Sitzungs-Cookie bei jeder angemeldeten Anfrage neu, damit die
+// 400 Tage ab der letzten Nutzung zählen und nicht ab der Anmeldung.
+function renew_session_cookie(): void {
+    $id = session_id();
+    if ($id !== '' && !headers_sent()) {
+        setcookie(SESSION_COOKIE, $id, session_cookie_options(session_days() * 86400));
+    }
 }
 
 function start_session(): void {
@@ -117,14 +141,10 @@ function start_session(): void {
     ini_set('session.use_strict_mode', '1');
     session_save_path($sessionDir);
     session_name(SESSION_COOKIE);
-    session_set_cookie_params([
-        'lifetime' => $lifetime,
-        'path' => '/',
-        'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-            || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'),
-        'httponly' => true,
-        'samesite' => 'Lax',
-    ]);
+    $options = session_cookie_options($lifetime);
+    unset($options['expires']);
+    $options['lifetime'] = $lifetime;
+    session_set_cookie_params($options);
     session_start();
 }
 
@@ -150,6 +170,7 @@ function require_auth(): void {
     }
     // Sitzung freigeben, damit parallele Anfragen derselben Anmeldung sich nicht blockieren.
     session_write_close();
+    renew_session_cookie();
 }
 
 // --- Sperre bei Fehlversuchen -----------------------------------------------
