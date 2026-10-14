@@ -78,13 +78,33 @@ if ($method === 'POST') {
         json_error('ungültiger key', 400);
     }
 
+    // Versionszähler pro Key (in den Daten unter "_rev"). Schickt die App die Version mit,
+    // auf der ihre Änderung beruht (baseRev), und jemand hat den Key inzwischen geändert,
+    // wird NICHT überschrieben, sondern mit 409 geantwortet. Ohne baseRev (alte App-Version
+    // im Cache) gilt wie bisher: der letzte Schreiber gewinnt.
+    $baseRev = $input['baseRev'] ?? null;
+    if ($baseRev !== null && (!is_int($baseRev) || $baseRev < 0)) {
+        json_error('ungültige baseRev', 400);
+    }
+
     $fp = fopen($file, 'c+');
     if (!$fp) json_error('Datenspeicher nicht beschreibbar', 500);
     flock($fp, LOCK_EX);
     $contents = stream_get_contents($fp);
     $data = json_decode($contents, true);
     if (!is_array($data)) $data = [];
+    $revs = (isset($data['_rev']) && is_array($data['_rev'])) ? $data['_rev'] : [];
+    $currentRev = (int)($revs[$key] ?? 0);
 
+    if ($baseRev !== null && $baseRev !== $currentRev) {
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        json_out(['ok' => false, 'conflict' => true, 'rev' => $currentRev], 409);
+    }
+
+    $newRev = $currentRev + 1;
+    $revs[$key] = $newRev;
+    $data['_rev'] = $revs;
     $data[$key] = $input['value'] ?? null;
 
     ftruncate($fp, 0);
@@ -94,7 +114,7 @@ if ($method === 'POST') {
     flock($fp, LOCK_UN);
     fclose($fp);
 
-    json_out(['ok' => true]);
+    json_out(['ok' => true, 'rev' => $newRev]);
 }
 
 json_error('method not allowed', 405);

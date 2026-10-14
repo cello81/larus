@@ -26,6 +26,10 @@ Die `public/.htaccess` (Security-Header, CSP) überschreibt beim Deployment eine
 - `api/data.php`: liest und schreibt die Daten, nur mit Anmeldung (sonst `401`). Schreiben nur
   für die Keys in `ALLOWED_KEYS`. **Kommt in `src/App.jsx` ein neuer `persist("…")`-Key dazu,
   muss er auch in `ALLOWED_KEYS` stehen**, sonst antwortet der Server mit `400`.
+- Schreibkonflikte: `data.php` zählt pro Key eine Version (`_rev` in den Daten). Die App schickt
+  mit jedem Speichern `baseRev`; hat jemand den Key inzwischen geändert, antwortet der Server mit
+  `409` und überschreibt nichts. Die App lädt dann neu und zeigt einen Hinweis. Ohne `baseRev`
+  (alte App im Cache) gilt der letzte Schreiber. Gespeichert wird pro Key nacheinander.
 - `api/lib/bootstrap.php`: Konfiguration, Sitzung, Prüfung der Herkunft, JSON-Helfer.
 - `api/config.php` gibt es nur auf dem Server (Vorlage `config.example.php`). Darin stehen
   `DATA_DIR` (Ordner ausserhalb des Webroots, hier liegen `data.json`, Sitzungen und die Liste

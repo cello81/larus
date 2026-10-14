@@ -50,18 +50,49 @@ async function loadAllShared() {
   if (!res.ok) throw new Error("Netzwerkfehler");
   return await res.json();
 }
-async function saveShared(key, value) {
-  try {
-    const res = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
-    });
-    if (res.status === 401) onAuthLost?.();
-    else if (!res.ok) console.error("Speichern fehlgeschlagen", res.status);
-  } catch (e) {
-    console.error("Speichern fehlgeschlagen", e);
+// Versionen der Schlüssel, auf denen die Daten dieses Geräts beruhen. Der Server lehnt ein
+// Speichern mit 409 ab, wenn jemand den Schlüssel inzwischen geändert hat (kein stilles
+// Überschreiben). Dann lädt die App neu und zeigt einen Hinweis.
+let revs = {};
+let onConflict = null;
+let saveEpoch = 0; // erhöht sich bei einem Konflikt: wartende Speicherungen mit alten Daten verfallen
+const saveQueues = {}; // pro Schlüssel nacheinander speichern, damit die Version stimmt
+
+// Übernimmt Versionen vom Server, nimmt aber nie eine ältere als die bekannte (ein Laden
+// kann eine laufende Speicherung überholen).
+function mergeRevs(next) {
+  if (!next || typeof next !== "object") return;
+  for (const [k, v] of Object.entries(next)) {
+    if (Number.isInteger(v) && v > (revs[k] ?? 0)) revs[k] = v;
   }
+}
+function saveShared(key, value) {
+  const epoch = saveEpoch;
+  const run = async () => {
+    if (epoch !== saveEpoch) return; // inzwischen Konflikt: diese Änderung beruht auf alten Daten
+    try {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value, baseRev: revs[key] ?? 0 }),
+      });
+      if (res.status === 401) {
+        onAuthLost?.();
+      } else if (res.status === 409) {
+        saveEpoch++;
+        onConflict?.();
+      } else if (!res.ok) {
+        console.error("Speichern fehlgeschlagen", res.status);
+      } else {
+        const body = await res.json().catch(() => ({}));
+        if (Number.isInteger(body.rev)) revs[key] = body.rev;
+      }
+    } catch (e) {
+      console.error("Speichern fehlgeschlagen", e);
+    }
+  };
+  saveQueues[key] = (saveQueues[key] || Promise.resolve()).then(run, run);
+  return saveQueues[key];
 }
 
 function isStandalone() {
@@ -166,6 +197,7 @@ export default function HouseholdApp() {
     }
     setNeedsLogin(false);
     setLoadError(false);
+    mergeRevs(data._rev);
     let loadedMembers = data.members || [];
     let loadedZones = data.zones || [];
 
@@ -219,6 +251,19 @@ export default function HouseholdApp() {
       onAuthLost = null;
     };
   }, []);
+
+  // Hat ein anderes Gerät dieselben Daten inzwischen geändert, wird nichts überschrieben:
+  // die App holt den aktuellen Stand und sagt es.
+  useEffect(() => {
+    onConflict = () => {
+      revs = {}; // neu vom Server lernen (auch nach einem zurückgespielten Backup)
+      loadData();
+      showToast("Jemand hat gleichzeitig etwas geändert. Der aktuelle Stand wurde geladen, bitte die Änderung nochmals machen.", 7000);
+    };
+    return () => {
+      onConflict = null;
+    };
+  }, [loadData]);
 
   // Re-fetch shared data whenever the app is opened or regains focus, so
   // everyone always sees the latest tasks/points without a manual reload.
@@ -420,9 +465,9 @@ export default function HouseholdApp() {
     );
   }
 
-  function showToast(message) {
+  function showToast(message, ms = 3000) {
     setToast(message);
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), ms);
   }
 
   function redeemReward(reward) {
