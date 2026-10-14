@@ -34,26 +34,31 @@ function isSameDay(a, b) {
 }
 
 const API_URL = "api/data.php";
+const AUTH_URL = "api/auth.php";
 const LOGIN_KEY = "larus_user_id";
 const INSTALL_DISMISSED_KEY = "larus_install_dismissed";
 
+// Der Server verlangt eine Anmeldung mit dem Familienpasswort (401 = nicht angemeldet).
+class AuthError extends Error {}
+let onAuthLost = null;
+
+// Wirft bei jedem Fehler, damit die App nie mit leeren Daten weiterläuft und
+// dann Standardwerte über die echten Daten speichert.
 async function loadAllShared() {
-  try {
-    const res = await fetch(API_URL);
-    if (!res.ok) throw new Error("Netzwerkfehler");
-    return await res.json();
-  } catch (e) {
-    console.error("Laden fehlgeschlagen", e);
-    return {};
-  }
+  const res = await fetch(API_URL);
+  if (res.status === 401) throw new AuthError("Nicht angemeldet");
+  if (!res.ok) throw new Error("Netzwerkfehler");
+  return await res.json();
 }
 async function saveShared(key, value) {
   try {
-    await fetch(API_URL, {
+    const res = await fetch(API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, value }),
     });
+    if (res.status === 401) onAuthLost?.();
+    else if (!res.ok) console.error("Speichern fehlgeschlagen", res.status);
   } catch (e) {
     console.error("Speichern fehlgeschlagen", e);
   }
@@ -111,6 +116,8 @@ function urgencyValue(dirt) {
 
 export default function HouseholdApp() {
   const [ready, setReady] = useState(false);
+  const [needsLogin, setNeedsLogin] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [members, setMembers] = useState([]);
   const [zones, setZones] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -142,7 +149,23 @@ export default function HouseholdApp() {
   const isFirstLoadRef = useRef(true);
 
   const loadData = useCallback(async () => {
-    const data = await loadAllShared();
+    let data;
+    try {
+      data = await loadAllShared();
+    } catch (e) {
+      if (e instanceof AuthError) {
+        setNeedsLogin(true);
+        setReady(true);
+      } else if (isFirstLoadRef.current) {
+        console.error("Laden fehlgeschlagen", e);
+        setLoadError(true);
+        setReady(true);
+      }
+      // Beim stillen Nachladen im Hintergrund bleiben die vorhandenen Daten stehen.
+      return;
+    }
+    setNeedsLogin(false);
+    setLoadError(false);
     let loadedMembers = data.members || [];
     let loadedZones = data.zones || [];
 
@@ -188,6 +211,14 @@ export default function HouseholdApp() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Läuft die Anmeldung während der Nutzung ab, erscheint wieder der Passwort-Bildschirm.
+  useEffect(() => {
+    onAuthLost = () => setNeedsLogin(true);
+    return () => {
+      onAuthLost = null;
+    };
+  }, []);
 
   // Re-fetch shared data whenever the app is opened or regains focus, so
   // everyone always sees the latest tasks/points without a manual reload.
@@ -454,6 +485,22 @@ export default function HouseholdApp() {
     );
   }
 
+  if (needsLogin) {
+    return <FamilyLoginScreen onSuccess={loadData} />;
+  }
+
+  if (loadError) {
+    return (
+      <LoadErrorScreen
+        onRetry={() => {
+          setLoadError(false);
+          setReady(false);
+          loadData();
+        }}
+      />
+    );
+  }
+
   if (pendingPinMember) {
     const member = memberById(pendingPinMember);
     return (
@@ -636,6 +683,115 @@ export default function HouseholdApp() {
       {historyTask && (
         <TaskHistoryModal task={historyTask} log={log} onClose={() => setHistoryTask(null)} />
       )}
+    </div>
+  );
+}
+
+const loginInputStyle = {
+  width: "100%",
+  boxSizing: "border-box",
+  border: "1px solid rgba(255,255,255,0.25)",
+  background: "rgba(255,255,255,0.08)",
+  color: "#fff",
+  borderRadius: "12px",
+  padding: "12px 16px",
+  fontSize: "16px",
+  outline: "none",
+};
+const loginButtonStyle = {
+  border: "none",
+  background: "rgba(255,255,255,0.92)",
+  color: "#2F4538",
+  borderRadius: "12px",
+  padding: "12px 16px",
+  fontSize: "15px",
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+// Anmeldung mit dem Familienpasswort. Gilt pro Gerät und wird vom Server geprüft;
+// die Namens-Auswahl und die persönlichen Codes kommen erst danach.
+function FamilyLoginScreen({ onSuccess }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!password || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(AUTH_URL + "?action=login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (res.ok) {
+        setPassword("");
+        await onSuccess();
+        return;
+      }
+      const body = await res.json().catch(() => ({}));
+      setError(body.error || "Anmeldung fehlgeschlagen.");
+    } catch (err) {
+      console.error("Anmeldung fehlgeschlagen", err);
+      setError("Keine Verbindung. Bitte später erneut versuchen.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="login-shell">
+      <div style={{ color: "#fff", fontSize: "24px", fontWeight: 600, marginBottom: "6px" }}>Larus</div>
+      <div style={{ color: "rgba(255,255,255,0.65)", fontSize: "14px", marginBottom: "28px", textAlign: "center" }}>
+        Familien-Passwort eingeben
+      </div>
+      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", maxWidth: "280px" }}>
+        <input
+          type="text"
+          name="username"
+          value="larus"
+          autoComplete="username"
+          readOnly
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{ position: "absolute", opacity: 0, width: 0, height: 0, pointerEvents: "none" }}
+        />
+        <input
+          type="password"
+          name="password"
+          autoComplete="current-password"
+          placeholder="Passwort"
+          aria-label="Familien-Passwort"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          style={loginInputStyle}
+        />
+        {error && (
+          <div role="alert" style={{ color: "#E0A72E", fontSize: "13px", textAlign: "center" }}>
+            {error}
+          </div>
+        )}
+        <button type="submit" disabled={busy || !password} style={{ ...loginButtonStyle, opacity: busy || !password ? 0.6 : 1 }}>
+          {busy ? "Prüfe…" : "Anmelden"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function LoadErrorScreen({ onRetry }) {
+  return (
+    <div className="login-shell">
+      <div style={{ color: "#fff", fontSize: "24px", fontWeight: 600, marginBottom: "6px" }}>Larus</div>
+      <div style={{ color: "rgba(255,255,255,0.65)", fontSize: "14px", marginBottom: "22px", textAlign: "center", maxWidth: "280px" }}>
+        Die Daten konnten nicht geladen werden. Es wurde nichts verändert.
+      </div>
+      <button onClick={onRetry} style={loginButtonStyle}>
+        Erneut versuchen
+      </button>
     </div>
   );
 }

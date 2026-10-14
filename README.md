@@ -45,3 +45,24 @@ manuelles Bauen oder Hochladen mehr nötig.
 - `public/api/data.php` ist das kleine Backend, das die Daten
   speichert. Bei Änderungen daran: vorsichtig testen, das ist die
   einzige serverseitige Logik.
+
+## Anmeldung
+
+Die App und die Daten sind durch ein Familienpasswort geschützt, das der
+Server prüft (gleiches Muster wie bei Abrakadata, ohne Plesk-Passwortschutz):
+
+- `api/auth.php` meldet an (`login`), ab (`logout`) und prüft (`me`).
+  Die Sitzung liegt als Cookie auf dem Gerät und gilt standardmässig 90 Tage
+  (`SESSION_DAYS` in `config.php`).
+- `api/data.php` antwortet ohne gültige Anmeldung nur mit `401`.
+- Nach 10 falschen Eingaben von derselben Adresse ist die Anmeldung
+  15 Minuten gesperrt.
+- Der Hash des Passworts steht als `FAMILY_PASSWORD_HASH` in `api/config.php`
+  (nur auf dem Server). Erzeugen mit
+  `php -r "echo password_hash('NEUES-PASSWORT', PASSWORD_DEFAULT);"`.
+  Wird der Hash geändert, sind alle Geräte abgemeldet (z.B. bei einem
+  verlorenen Handy).
+- Die persönlichen 4-stelligen Codes der Mitglieder bleiben eine reine
+  Bequemlichkeit innerhalb der Familie und ersetzen kein Passwort.
+- Fehlt `config.php` oder der Hash, startet die API bewusst nicht (`500`),
+  statt offen zu sein.

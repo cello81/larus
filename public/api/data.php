@@ -2,53 +2,18 @@
 // Kleines Daten-Backend für die Haushalts-App.
 // Speichert alle App-Daten (Mitglieder, Aufgaben, Belohnungen, Verlauf) in data.json.
 //
-// Ort der Datei: wie bei Abrakadata in einem Ordner AUSSERHALB des Webroots,
-// gesetzt über DATA_DIR in api/config.php (siehe config.example.php).
-
-header('Content-Type: application/json; charset=utf-8');
-header('X-Content-Type-Options: nosniff');
-header('Cache-Control: no-store');
+// Zugriff nur mit Anmeldung (siehe auth.php). Ort der Datei: wie bei Abrakadata
+// in einem Ordner AUSSERHALB des Webroots, gesetzt über DATA_DIR in api/config.php.
+require_once __DIR__ . '/lib/bootstrap.php';
 
 const ALLOWED_KEYS = ['members', 'zones', 'tasks', 'rewards', 'log', 'statsResetAt', 'overallResetAt'];
-const MAX_BODY_BYTES = 1048576; // 1 MB
 
-function fail(int $code, string $msg): void {
-    http_response_code($code);
-    echo json_encode(['error' => $msg]);
-    exit;
-}
+// Als Erstes: ohne gültige Anmeldung geschieht hier nichts (auch keine Datenübernahme).
+require_auth();
 
-// Konfiguration laden. Ohne config.php startet die App bewusst nicht, statt
-// die Daten im öffentlichen Ordner anzulegen.
-if (!is_file(__DIR__ . '/config.php')) {
-    error_log('larus: api/config.php fehlt (Vorlage: config.example.php)');
-    fail(500, 'Konfiguration fehlt');
-}
-require_once __DIR__ . '/config.php';
-
-function data_dir(): string {
-    if (!defined('DATA_DIR') || DATA_DIR === '') {
-        error_log('larus: DATA_DIR ist in api/config.php nicht gesetzt');
-        fail(500, 'Datenspeicher nicht konfiguriert');
-    }
-    return rtrim((string) DATA_DIR, '/\\');
-}
-
-function ensure_data_dir(string $dir): void {
-    if (!is_dir($dir) && !@mkdir($dir, 0770, true) && !is_dir($dir)) {
-        error_log("larus: Datenordner kann nicht angelegt werden: $dir (Pfad und Schreibrechte prüfen, bei Plesk auch open_basedir)");
-        fail(500, 'Datenordner nicht verfügbar');
-    }
-    if (!is_writable($dir)) {
-        error_log("larus: Datenordner nicht beschreibbar: $dir");
-        fail(500, 'Datenordner nicht beschreibbar');
-    }
-    // Zusätzlicher Schutz, falls der Ordner doch per HTTP erreichbar ist.
-    $htaccess = $dir . '/.htaccess';
-    if (!file_exists($htaccess)) {
-        @file_put_contents($htaccess, "Require all denied\n");
-    }
-}
+$dataDir = data_dir();
+ensure_data_dir($dataDir);
+$file = $dataDir . '/data.json';
 
 // Gibt es am neuen Ort noch keine Datei, wohl aber die alte api/data.json,
 // wird sie einmalig unverändert kopiert. Die alte Datei bleibt bewusst liegen
@@ -65,25 +30,22 @@ function migrate_legacy_data(string $newPath): void {
     $contents = file_get_contents($oldPath);
     if ($contents === false) {
         error_log("larus: alte Datendatei nicht lesbar: $oldPath");
-        fail(500, 'Datenübernahme fehlgeschlagen');
+        json_error('Datenübernahme fehlgeschlagen', 500);
     }
     json_decode($contents, true);
     if (json_last_error() !== JSON_ERROR_NONE) {
         error_log("larus: alte Datendatei ist kein gültiges JSON: $oldPath");
-        fail(500, 'Datenübernahme fehlgeschlagen');
+        json_error('Datenübernahme fehlgeschlagen', 500);
     }
     if (file_put_contents($newPath, $contents, LOCK_EX) !== strlen($contents)) {
         @unlink($newPath);
         error_log("larus: Datenübernahme nach $newPath fehlgeschlagen");
-        fail(500, 'Datenübernahme fehlgeschlagen');
+        json_error('Datenübernahme fehlgeschlagen', 500);
     }
     @chmod($newPath, 0660);
     error_log("larus: Daten von $oldPath nach $newPath kopiert. Die alte Datei bitte nach einer Prüfung löschen.");
 }
 
-$dataDir = data_dir();
-ensure_data_dir($dataDir);
-$file = $dataDir . '/data.json';
 migrate_legacy_data($file);
 
 if (!file_exists($file)) {
@@ -95,7 +57,7 @@ $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
     $fp = fopen($file, 'r');
-    if (!$fp) fail(500, 'Datenspeicher nicht lesbar');
+    if (!$fp) json_error('Datenspeicher nicht lesbar', 500);
     flock($fp, LOCK_SH);
     $contents = stream_get_contents($fp);
     flock($fp, LOCK_UN);
@@ -104,39 +66,20 @@ if ($method === 'GET') {
     $data = json_decode($contents, true);
     if (!is_array($data)) $data = [];
 
-    echo json_encode($data);
-    exit;
+    json_out($data);
 }
 
 if ($method === 'POST') {
-    // Schutz vor fremden Seiten (CSRF): nur JSON und nur vom eigenen Host.
-    $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
-    if (stripos($contentType, 'application/json') !== 0) {
-        fail(415, 'nur application/json erlaubt');
-    }
-    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-    $ownHost = explode(':', $_SERVER['HTTP_HOST'] ?? '')[0];
-    if ($origin !== '' && parse_url($origin, PHP_URL_HOST) !== $ownHost) {
-        fail(403, 'fremde Herkunft');
-    }
-
-    $raw = file_get_contents('php://input', false, null, 0, MAX_BODY_BYTES + 1);
-    if ($raw === false || strlen($raw) > MAX_BODY_BYTES) {
-        fail(413, 'Anfrage zu gross');
-    }
-
-    $input = json_decode($raw, true);
-    if (!is_array($input)) {
-        fail(400, 'ungültiges JSON');
-    }
+    require_same_origin();
+    $input = json_body();
 
     $key = $input['key'] ?? null;
     if (!is_string($key) || !in_array($key, ALLOWED_KEYS, true)) {
-        fail(400, 'ungültiger key');
+        json_error('ungültiger key', 400);
     }
 
     $fp = fopen($file, 'c+');
-    if (!$fp) fail(500, 'Datenspeicher nicht beschreibbar');
+    if (!$fp) json_error('Datenspeicher nicht beschreibbar', 500);
     flock($fp, LOCK_EX);
     $contents = stream_get_contents($fp);
     $data = json_decode($contents, true);
@@ -151,8 +94,7 @@ if ($method === 'POST') {
     flock($fp, LOCK_UN);
     fclose($fp);
 
-    echo json_encode(['ok' => true]);
-    exit;
+    json_out(['ok' => true]);
 }
 
-fail(405, 'method not allowed');
+json_error('method not allowed', 405);
