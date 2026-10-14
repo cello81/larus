@@ -1,0 +1,20 @@
+# Wöchentliche Prüfung auf Sicherheits- und Versionsupdates (gleiches Muster wie
+# bei Abrakadata). Dependabot öffnet Pull Requests; erst nach dem Mergen wird
+# deployt, also vorher kurz prüfen, dass der Build grün ist.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

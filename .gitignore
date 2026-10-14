@@ -1,5 +1,8 @@
 node_modules
 
+# Build-Ergebnis: entsteht in der GitHub Action und wird auf den Branch "deploy" gepusht
+/dist/
+
 # Server-Konfiguration und Live-Daten der Familie: nie committen
 /public/api/config.php
 /public/api/data.json

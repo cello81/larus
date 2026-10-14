@@ -1,0 +1,19 @@
+# Wird vom Build ins Wurzelverzeichnis der Seite kopiert (public/), gleiches
+# Muster wie bei Abrakadata. Wer im Webroot eine eigene .htaccess hat, muss sie
+# vor dem Deployment sichern und zusammenführen: Die Datei wird überschrieben.
+
+# Sicherheits-Header für Seite und API. Die API setzt zusätzlich eigene.
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+    # Nur HTTPS: Browser merken sich 6 Monate, die Seite nur verschlüsselt
+    # zu laden. Bewusst ohne includeSubDomains/preload (marcini.ch hat weitere
+    # Subdomains).
+    Header always set Strict-Transport-Security "max-age=15552000"
+    # Alles nur von der eigenen Domain. 'unsafe-inline' nur bei Styles, weil
+    # React einzelne style-Attribute setzt; Skripte bleiben streng. Service
+    # Worker und Manifest der PWA kommen ebenfalls von der eigenen Domain.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+</IfModule>
