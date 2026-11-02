@@ -23,5 +23,12 @@ jobs:
         with:
           node-version: lts/*
 
-      - name: npm audit (Pakete in package-lock.json)
+      # Produktionsabhängigkeiten: schlägt bei Lücken ab "moderate" fehl.
+      - name: npm audit (Produktion)
+        run: npm audit --omit=dev --audit-level=moderate
+
+      # Build-Werkzeuge (z. B. vite-plugin-pwa/workbox): nur zur Information, damit
+      # Lücken ohne verfügbaren Fix nicht dauerhaft rot anzeigen. Im Log nachlesen.
+      - name: npm audit (Build-Werkzeuge, nur Info)
         run: npm audit --audit-level=moderate
+        continue-on-error: true
